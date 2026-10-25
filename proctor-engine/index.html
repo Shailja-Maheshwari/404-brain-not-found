@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Proctor Engine Demo</title>
+  <style>
+    body { font-family: Arial; text-align: center; background: #111; color: white; }
+    video { width: 480px; border-radius: 10px; transform: scaleX(-1); }
+    #status { font-size: 28px; margin-top: 16px; }
+    .ok { color: #4ade80; } .warn { color: #facc15; } .bad { color: #f87171; }
+    #debug, #audio, #blink { font-size: 14px; color: #9ca3af; margin-top: 6px; }
+    #risk { font-size: 20px; margin-top: 8px; }
+    button { margin: 12px 6px 0; padding: 10px 20px; font-size: 16px; border: 0;
+             border-radius: 8px; background: #3b82f6; color: white; cursor: pointer; }
+    #log { width: 480px; margin: 16px auto; text-align: left; font-size: 14px;
+           background: #1f1f1f; padding: 10px; border-radius: 8px; min-height: 60px; }
+    #log div { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+    #log img { width: 64px; border-radius: 4px; transform: scaleX(-1); }
+  </style>
+</head>
+<body>
+  <h1>Proctor Engine</h1>
+  <video id="video" autoplay playsinline muted></video>
+  <div id="status">Loading AI model...</div>
+  <div id="debug"></div>
+  <div id="blink"></div>
+  <div id="audio"></div>
+  <div id="risk">Risk score: 0 (GREEN)</div>
+  <div>
+    <button id="calBtn">Calibrate (look straight and stay quiet for 3 sec)</button>
+    <button id="liveBtn">Liveness test (blink twice)</button>
+  </div>
+  <div id="log"><b>Violations:</b></div>
+
+  <script type="module">
+    import { ProctorEngine } from "./proctorEngine.js";
+
+    const statusEl = document.getElementById("status");
+    const debugEl = document.getElementById("debug");
+    const blinkEl = document.getElementById("blink");
+    const audioEl = document.getElementById("audio");
+    const riskEl = document.getElementById("risk");
+    const logEl = document.getElementById("log");
+    const calBtn = document.getElementById("calBtn");
+    const liveBtn = document.getElementById("liveBtn");
+
+    const engine = new ProctorEngine(document.getElementById("video"), {
+      sessionId: "test-123",
+      getQuestionNo: () => 1,
+
+      // Called for every violation: log it (without the image data) and show a thumbnail
+      onEvent: (event) => {
+        console.log("EVENT:", JSON.stringify({ ...event, snapshot: event.snapshot ? "[image]" : null }));
+        const row = document.createElement("div");
+        if (event.snapshot) {
+          const img = document.createElement("img");
+          img.src = event.snapshot;
+          row.appendChild(img);
+        }
+        const span = document.createElement("span");
+        span.textContent = new Date().toLocaleTimeString() + " - " + event.type + " (" + event.severity + ")";
+        row.appendChild(span);
+        logEl.appendChild(row);
+      },
+
+      // Called on every check with the live status
+      onStatus: (s) => {
+        if (s.faces === 0) { statusEl.textContent = "No face!"; statusEl.className = "bad"; }
+        else if (s.faces > 1) { statusEl.textContent = "Multiple faces!"; statusEl.className = "warn"; }
+        else if (s.headTurn) { statusEl.textContent = "Head turned sideways!"; statusEl.className = "warn"; }
+        else if (s.headDown) { statusEl.textContent = "Head tilted down!"; statusEl.className = "warn"; }
+        else if (s.gazeAway) { statusEl.textContent = "Eyes looking away!"; statusEl.className = "warn"; }
+        else { statusEl.textContent = "1 face OK"; statusEl.className = "ok"; }
+
+        debugEl.textContent = s.calibrated
+          ? "yaw diff: " + s.yawDiff.toFixed(3) + " | pitch diff: " + s.pitchDiff.toFixed(3) +
+            " | gaze side: " + s.gazeSide.toFixed(2) + " | gaze down: " + s.gazeDown.toFixed(2)
+          : (s.calibrating ? "Calibrating..." : "Click the Calibrate button first");
+
+        // Live blink score: 0 = eyes open, 1 = eyes closed (use it to tune the blink thresholds)
+        blinkEl.textContent = "Blink score: " + s.blinkScore.toFixed(2) +
+          (s.liveness ? "  | Liveness running, blinks counted: " + s.blinksDone : "");
+
+        audioEl.textContent = s.micOn
+          ? "Mic level: " + s.audioLevel.toFixed(3) + " | limit: " + s.audioThreshold.toFixed(3) +
+            " | peak: " + s.audioPeak.toFixed(3) + (s.audioSpike ? "  NOISE!" : "")
+          : "Mic off (permission not granted)";
+
+        let level = "GREEN", color = "#4ade80";
+        if (s.riskScore > 25) { level = "RED"; color = "#f87171"; }
+        else if (s.riskScore > 10) { level = "YELLOW"; color = "#facc15"; }
+        riskEl.textContent = "Risk score: " + s.riskScore + " (" + level + ")";
+        riskEl.style.color = color;
+      },
+    });
+
+    calBtn.onclick = async () => {
+      calBtn.textContent = "Look straight and stay quiet... 3 sec";
+      const ok = await engine.calibrate();
+      calBtn.textContent = ok ? "Calibrated! (click to recalibrate)" : "No face found, try again";
+    };
+
+    liveBtn.onclick = async () => {
+      liveBtn.textContent = "Look at the camera and blink twice...";
+      const ok = await engine.liveness({ blinks: 2, timeoutMs: 10000 });
+      liveBtn.textContent = ok ? "Liveness PASS" : "Liveness FAIL (try again)";
+    };
+
+    await engine.start();
+  </script>
+</body>
+</html>

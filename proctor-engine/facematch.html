@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Face Match Demo</title>
+  <style>
+    body { font-family: Arial; text-align: center; background: #111; color: white; }
+    video { width: 480px; border-radius: 10px; transform: scaleX(-1); }
+    #status { font-size: 24px; margin-top: 16px; min-height: 32px; }
+    .ok { color: #4ade80; } .warn { color: #facc15; } .bad { color: #f87171; }
+    #info { font-size: 14px; color: #9ca3af; margin-top: 6px; min-height: 20px; }
+    button { margin: 12px 6px 0; padding: 10px 20px; font-size: 16px; border: 0;
+             border-radius: 8px; background: #3b82f6; color: white; cursor: pointer; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    #clearBtn { background: #6b7280; }
+  </style>
+</head>
+<body>
+  <h1>Face Match at Login</h1>
+  <video id="video" autoplay playsinline muted></video>
+  <div id="status">Loading AI models...</div>
+  <div id="info"></div>
+  <div>
+    <button id="enrollBtn" disabled>1. Enroll my face (registration)</button>
+    <button id="verifyBtn" disabled>2. Verify face (login)</button>
+    <button id="clearBtn" disabled>Clear saved face</button>
+  </div>
+
+  <script type="module">
+    import { FaceMatcher } from "./faceMatch.js";
+
+    const video = document.getElementById("video");
+    const statusEl = document.getElementById("status");
+    const infoEl = document.getElementById("info");
+    const enrollBtn = document.getElementById("enrollBtn");
+    const verifyBtn = document.getElementById("verifyBtn");
+    const clearBtn = document.getElementById("clearBtn");
+
+    const STORAGE_KEY = "proctorReferenceFace";
+    const matcher = new FaceMatcher({ threshold: 0.5 });
+
+    function setStatus(text, cls) {
+      statusEl.textContent = text;
+      statusEl.className = cls || "";
+    }
+    function setBusy(busy) {
+      enrollBtn.disabled = busy;
+      verifyBtn.disabled = busy || !matcher.hasReference();
+      clearBtn.disabled = busy || !matcher.hasReference();
+    }
+
+    // Reference is stored as numbers only (no photo is saved)
+    function saveReference() {
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(matcher.getReference())); } catch (e) {}
+    }
+    function loadReference() {
+      try {
+        const saved = localStorage.getItem(STORAGE_KEY);
+        if (saved) matcher.setReference(JSON.parse(saved));
+      } catch (e) {}
+    }
+
+    enrollBtn.onclick = async () => {
+      setBusy(true);
+      setStatus("Look straight at the camera... capturing", "warn");
+      infoEl.textContent = "";
+      const res = await matcher.enroll(video);
+      if (res.ok) {
+        saveReference();
+        setStatus("Face enrolled!", "ok");
+        infoEl.textContent = "Now click Verify to test the match.";
+      } else {
+        setStatus(res.reason, "bad");
+      }
+      setBusy(false);
+    };
+
+    verifyBtn.onclick = async () => {
+      setBusy(true);
+      setStatus("Verifying... look at the camera", "warn");
+      const res = await matcher.verify(video);
+      if (!res.ok) {
+        setStatus(res.reason, "bad");
+      } else if (res.match) {
+        setStatus("Face MATCHED. Access granted.", "ok");
+        infoEl.textContent = "Distance: " + res.distance.toFixed(3) + " (limit " + matcher.cfg.threshold + ")";
+      } else {
+        setStatus("Face did NOT match. Access denied.", "bad");
+        infoEl.textContent = "Distance: " + res.distance.toFixed(3) + " (limit " + matcher.cfg.threshold + ")";
+      }
+      setBusy(false);
+    };
+
+    clearBtn.onclick = () => {
+      try { localStorage.removeItem(STORAGE_KEY); } catch (e) {}
+      matcher.setReference(null);
+      setStatus("Saved face cleared. Enroll again.", "warn");
+      infoEl.textContent = "";
+      setBusy(false);
+    };
+
+    // ---- START: camera first, then models ----
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      video.srcObject = stream;
+      await video.play();
+      await matcher.load();
+      loadReference();
+      setStatus(
+        matcher.hasReference() ? "Saved face found. You can verify now." : "Ready. Enroll your face first.",
+        matcher.hasReference() ? "ok" : ""
+      );
+      setBusy(false);
+    } catch (e) {
+      console.error(e);
+      setStatus("Camera or model failed to load. Check permissions and internet.", "bad");
+    }
+  </script>
+</body>
+</html>
