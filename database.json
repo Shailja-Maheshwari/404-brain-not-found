@@ -1,0 +1,79 @@
+{
+  "questions": [
+    {
+      "id": 1,
+      "question": "What is the capital of France?",
+      "options": [
+        "Berlin",
+        "Madrid",
+        "Paris",
+        "Rome"
+      ],
+      "correctAnswer": "Paris"
+    },
+    {
+      "id": 2,
+      "question": "Which data structure uses LIFO principle?",
+      "options": [
+        "Queue",
+        "Stack",
+        "Array",
+        "Linked List"
+      ],
+      "correctAnswer": "Stack"
+    },
+    {
+      "id": 3,
+      "question": "What does HTML stand for?",
+      "options": [
+        "Hyper Text Markup Language",
+        "High Tech Modern Language",
+        "Hyper Transfer Mode Link",
+        "Home Tool Management Line"
+      ],
+      "correctAnswer": "Hyper Text Markup Language"
+    }
+  ],
+  "submissions": [
+    {
+      "id": 1792581378317,
+      "studentEmail": "student@example.com",
+      "answers": {
+        "1": "Paris",
+        "2": "Stack"
+      },
+      "violationCount": 2,
+      "violationLogs": [
+        "Tab switched to ChatGPT",
+        "External monitor detected"
+      ],
+      "submittedAt": "21/10/2026, 4:46:18 pm"
+    },
+    {
+      "id": 1792943859252,
+      "studentEmail": "student@test.com",
+      "answers": {
+        "1": "Paris",
+        "2": "Stack"
+      },
+      "score": 2,
+      "total": 3,
+      "violationCount": 1,
+      "violationLogs": [
+        "Gaze diverted from screen"
+      ],
+      "submittedAt": "25/10/2026, 9:27:39 pm"
+    },
+    {
+      "id": 1792946552635,
+      "studentEmail": "student@test.com",
+      "score": 0,
+      "total": 3,
+      "violationCount": 1,
+      "violationLogs": [
+        "Gaze diverted from screen"
+      ],
+      "submittedAt": "25/10/2026, 10:12:32 pm"
+    }
+  ]
+}

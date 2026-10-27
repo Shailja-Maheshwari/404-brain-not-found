@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Proctoring Backend Live Tester</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 25px; background: #f4f6f8; }
+    .card { background: white; padding: 15px; margin-bottom: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+    button { padding: 8px 16px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; margin-right: 8px; }
+    button:hover { background: #0056b3; }
+    input { padding: 7px; border: 1px solid #ccc; border-radius: 4px; margin-right: 8px; font-size: 14px; }
+    pre { background: #eee; padding: 10px; border-radius: 4px; overflow-x: auto; min-height: 20px; }
+    .error { color: red; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h2>🧪 Proctoring Backend Live Tester</h2>
+
+  <!-- 1. Questions API -->
+  <div class="card">
+    <h3>1. Questions API</h3>
+    <button onclick="getQuestions()">Fetch Questions</button>
+    <pre id="qResult">Click button to test...</pre>
+  </div>
+
+  <!-- 2. Dynamic OTP Flow -->
+  <div class="card">
+    <h3>2. Dynamic 6-Digit OTP Flow</h3>
+    <p><b>Step 1:</b> Email daal kar OTP generate karo</p>
+    <input type="text" id="emailInput" value="student@test.com" placeholder="Enter Email">
+    <button onclick="sendOtp()">Send OTP</button>
+
+    <p style="margin-top: 15px;"><b>Step 2:</b> Received OTP daal kar verify karo</p>
+    <input type="text" id="otpInput" placeholder="Enter Received OTP">
+    <button onclick="verifyOtp()">Verify OTP</button>
+
+    <pre id="otpResult">Click "Send OTP" to start...</pre>
+  </div>
+
+  <!-- 3. Face Auth API -->
+  <div class="card">
+    <h3>3. Face Recognition Authentication API</h3>
+    <button onclick="testFaceAuth()">Simulate Face Match</button>
+    <pre id="faceResult">Click button to test...</pre>
+  </div>
+
+  <!-- 4. Test Submit API -->
+  <div class="card">
+    <h3>4. Test Submit & Violations Evaluation</h3>
+    <button onclick="submitTest()">Submit Dummy Test</button>
+    <pre id="submitResult">Click button to test...</pre>
+  </div>
+
+  <!-- 5. Admin API -->
+  <div class="card">
+    <h3>5. Admin Submissions View</h3>
+    <button onclick="viewSubmissions()">Get All Submissions</button>
+    <pre id="adminResult">Click button to test...</pre>
+  </div>
+
+  <script>
+    const BASE_URL = 'http://localhost:5000';
+
+    async function getQuestions() {
+      const el = document.getElementById('qResult');
+      el.innerText = 'Fetching...';
+      try {
+        const res = await fetch(`${BASE_URL}/api/questions`);
+        const data = await res.json();
+        el.innerText = JSON.stringify(data, null, 2);
+      } catch (err) {
+        el.innerText = '❌ Error: Server se connect nahi ho raha! VS Code terminal mein "node server.js" chalu karo.';
+      }
+    }
+
+    async function sendOtp() {
+      const el = document.getElementById('otpResult');
+      el.innerText = 'Sending OTP...';
+      const email = document.getElementById('emailInput').value;
+      try {
+        const res = await fetch(`${BASE_URL}/api/auth/send-otp`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: email })
+        });
+        const data = await res.json();
+        el.innerText = JSON.stringify(data, null, 2);
+        if (data.demoOtp) {
+          document.getElementById('otpInput').value = data.demoOtp;
+        }
+      } catch (err) {
+        el.innerText = '❌ Error: Server se connect nahi ho raha! VS Code terminal mein "node server.js" chalu karo.';
+      }
+    }
+
+    async function verifyOtp() {
+      const el = document.getElementById('otpResult');
+      el.innerText = 'Verifying OTP...';
+      const email = document.getElementById('emailInput').value;
+      const otp = document.getElementById('otpInput').value;
+      try {
+        const res = await fetch(`${BASE_URL}/api/auth/verify-otp`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: email, otp: otp })
+        });
+        const data = await res.json();
+        el.innerText = JSON.stringify(data, null, 2);
+      } catch (err) {
+        el.innerText = '❌ Error: Server band hai ya connection fail hua!';
+      }
+    }
+
+    async function testFaceAuth() {
+      const el = document.getElementById('faceResult');
+      el.innerText = 'Verifying Face...';
+      const email = document.getElementById('emailInput').value;
+      try {
+        const res = await fetch(`${BASE_URL}/api/auth/verify-face`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ studentEmail: email })
+        });
+        const data = await res.json();
+        el.innerText = JSON.stringify(data, null, 2);
+      } catch (err) {
+        el.innerText = '❌ Error: Server se connect nahi ho raha!';
+      }
+    }
+
+    async function submitTest() {
+      const el = document.getElementById('submitResult');
+      el.innerText = 'Submitting Test...';
+      const email = document.getElementById('emailInput').value;
+      try {
+        const res = await fetch(`${BASE_URL}/api/test/submit`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            studentEmail: email,
+            answers: { "1": "Paris", "2": "Stack" },
+            violationCount: 1,
+            violationLogs: ["Gaze diverted from screen"]
+          })
+        });
+        const data = await res.json();
+        el.innerText = JSON.stringify(data, null, 2);
+      } catch (err) {
+        el.innerText = '❌ Error: Server band hai!';
+      }
+    }
+
+    async function viewSubmissions() {
+      const el = document.getElementById('adminResult');
+      el.innerText = 'Loading...';
+      try {
+        const res = await fetch(`${BASE_URL}/api/admin/submissions`);
+        const data = await res.json();
+        el.innerText = JSON.stringify(data, null, 2);
+      } catch (err) {
+        el.innerText = '❌ Error: Server band hai!';
+      }
+    }
+  </script>
+</body>
+</html>
