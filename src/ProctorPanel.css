@@ -1,0 +1,47 @@
+body { display: block; margin: 0; }
+#root { max-width: none; margin: 0; padding: 0; 
+text-align: left; }
+
+.pp-root { font-family: system-ui, sans-serif; max-width: 
+900px; margin: 0 auto; padding: 24px; color: #1f2933; }
+.pp-header { display: flex; justify-content: 
+space-between; align-items: center; }
+.pp-badges { display: flex; gap: 8px; }
+.pp-badge { background: #e4e7eb; padding: 4px 10px; 
+border-radius: 12px; font-size: 13px; }
+.pp-badge.pp-bad { background: #fde2e2; color: #a61b1b; }
+.pp-warning { background: #fff3cd; border: 1px solid 
+#f0c36d; padding: 12px; border-radius: 8px; margin: 12px 
+0; }
+.pp-warning.pp-limit { background: #fde2e2; border-color: 
+#e57373; font-weight: 600; }
+.pp-card { border: 1px solid #d9dee3; border-radius: 10px; 
+padding: 16px; margin: 16px 0; background: #fff; }
+.pp-card textarea { width: 100%; box-sizing: border-box; }
+.pp-muted { color: #7b8794; font-size: 12px; }
+.pp-events { list-style: none; padding: 0; margin: 0; 
+max-height: 420px; overflow-y: auto; }
+.pp-event { border-left: 4px solid #9aa5b1; padding: 6px 
+10px; margin-bottom: 6px; background: #f7f8fa; font-size: 
+13px; }
+.pp-event.pp-flag { border-left-color: #e8a200; 
+background: #fff8e1; }
+.pp-event.pp-violation { border-left-color: #d32f2f; 
+background: #fdecec; }
+.pp-time { float: right; color: #7b8794; }
+.pp-details { color: #52606d; font-family: ui-monospace, 
+monospace; font-size: 12px; word-break: break-all; }
+
+.pp-quit {
+  background: #fff;
+  border: 1px solid #c53030;
+  color: #c53030;
+  border-radius: 12px;
+  padding: 4px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.pp-quit:hover {
+  background: #fde2e2;
+}
