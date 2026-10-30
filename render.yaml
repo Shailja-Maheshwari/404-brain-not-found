@@ -1,0 +1,76 @@
+services:
+  # -----------------------------------------------------------
+  # 1. Express Backend & MongoDB API
+  # -----------------------------------------------------------
+  - type: web
+    name: proctor-backend
+    runtime: node
+    plan: free
+    rootDir: proctor-backend
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_VERSION
+        value: 20.0.0
+      - key: PORT
+        value: 10000
+      - key: JWT_SECRET
+        generateValue: true
+      - key: MONGODB_URI
+        sync: false
+      - key: AIRTABLE_API_KEY
+        sync: false
+      - key: AIRTABLE_BASE_ID
+        sync: false
+      - key: AIRTABLE_TABLE_ROLL
+        value: Roll
+      - key: AIRTABLE_TABLE_ADMINS
+        value: Admins
+      - key: AIRTABLE_TABLE_TESTS
+        value: Tests
+      - key: AIRTABLE_TABLE_MCQS
+        value: MCQs
+      - key: BREVO_API_KEY
+        sync: false
+      - key: MAIL_FROM
+        sync: false
+      - key: FACE_THRESHOLD
+        value: "0.45"
+      - key: MAX_STRIKES
+        value: "3"
+      - key: CORS_ORIGINS
+        sync: false
+
+  # -----------------------------------------------------------
+  # 2. Student Examination Portal (proctor-ui)
+  # -----------------------------------------------------------
+  - type: web
+    name: proctor-ui
+    runtime: static
+    rootDir: proctor-ui
+    buildCommand: npm install && npm run build
+    staticPublishPath: ./dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: VITE_API_URL
+        sync: false
+
+  # -----------------------------------------------------------
+  # 3. Proctor / Supervisor Admin Portal (proctor-admin)
+  # -----------------------------------------------------------
+  - type: web
+    name: proctor-admin
+    runtime: static
+    rootDir: proctor-admin
+    buildCommand: npm install && npm run build
+    staticPublishPath: ./dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: VITE_API_URL
+        sync: false
