@@ -7,7 +7,7 @@ const crypto = require("crypto");
 const rateLimit = require("express-rate-limit");
 const nodemailer = require("nodemailer");
 const mongoose = require("mongoose");
-const { Student, Otp, Lock, Attempt, Violation } = require("./models");
+const { Student, Otp, Lock, Attempt, Violation, Verification, ActivityLog } = require("./models");
 const data = require("./dataSource");
 
 // ---------- CONFIG ----------
@@ -505,6 +505,169 @@ app.post("/api/auth/face-verify", requireStudent("login"), wrap(async (req, res)
   });
 }));
 
+// ---------- STUDENT: TEST IDENTITY RE-VERIFICATION BEFORE EVERY TEST ----------
+// Live face capture & descriptor compared with registered face in MongoDB before every test
+app.post("/api/tests/:testId/verify-identity", requireStudent("login", "test"), wrap(async (req, res) => {
+  const s = req.student;
+  const testId = req.params.testId;
+  const testTitle = req.body.testTitle || "Online Exam";
+
+  if (!hasFace(s)) {
+    return res.status(409).json({
+      error: "Your face is not registered yet. Please complete face registration first.",
+      code: "FACE_NOT_REGISTERED",
+    });
+  }
+
+  const key = "face:" + s.regNo + ":" + testId;
+  const until = await lockedUntil(key);
+  if (until) return res.status(429).json(lockedBody(until));
+
+  if (!validDescriptor(req.body.descriptor)) {
+    return res.status(400).json({ error: "Invalid face descriptor data." });
+  }
+
+  const photo = cleanImage(req.body.photo) || (s.face && s.face.photo) || "";
+
+  const distance = faceDistance(req.body.descriptor, Array.from(s.face.descriptor));
+  const isMatch = distance < FACE_THRESHOLD;
+
+  // Count recent failed attempts for this test in the last 15 minutes
+  const recentFails = await Verification.countDocuments({
+    regNo: s.regNo,
+    testId,
+    status: "failed",
+    verifiedAt: { $gte: new Date(Date.now() - 15 * 60 * 1000) },
+  });
+
+  const verification = await Verification.create({
+    regNo: s.regNo,
+    studentId: s._id,
+    studentName: s.name,
+    studentEmail: s.email,
+    testId,
+    testTitle,
+    status: isMatch ? "passed" : "failed",
+    verifiedAt: new Date(),
+    distance: Number(distance.toFixed(4)),
+    threshold: FACE_THRESHOLD,
+    photo,
+    failureReason: isMatch
+      ? null
+      : `Face similarity distance (${distance.toFixed(3)}) exceeded threshold (${FACE_THRESHOLD})`,
+  });
+
+  if (!isMatch) {
+    const f = await recordFail(key);
+    const retriesLeft = Math.max(0, 3 - recentFails - 1);
+    return res.status(401).json({
+      match: false,
+      error: "Identity verification failed. Your face did not match the registered profile.",
+      distance: Number(distance.toFixed(4)),
+      threshold: FACE_THRESHOLD,
+      retriesLeft,
+      canRequestReview: true,
+      verificationId: String(verification._id),
+    });
+  }
+
+  await clearFails(key);
+
+  const sid = await startSession(s.regNo);
+  if (!sid) {
+    return res.status(409).json({
+      error: "This account is already logged in on another device.",
+      code: "ALREADY_LOGGED_IN",
+    });
+  }
+
+  const testToken = sign(
+    {
+      purpose: "test",
+      regNo: s.regNo,
+      sid,
+      testId,
+      verificationId: String(verification._id),
+    },
+    TEST_TOKEN_TTL
+  );
+
+  res.json({
+    match: true,
+    token: testToken,
+    verification: {
+      id: String(verification._id),
+      status: "passed",
+      distance: Number(distance.toFixed(4)),
+    },
+    student: publicStudent(s),
+    maxStrikes: MAX_STRIKES,
+  });
+}));
+
+// Fallback: Student requests admin review if face verification fails legitimately
+app.post("/api/tests/:testId/request-review", requireStudent("login", "test"), wrap(async (req, res) => {
+  const { verificationId, reason } = req.body;
+  if (!verificationId) return res.status(400).json({ error: "verificationId is required" });
+
+  const ver = await Verification.findOne({ _id: verificationId, regNo: req.student.regNo });
+  if (!ver) return res.status(404).json({ error: "Verification record not found" });
+
+  ver.status = "pending_review";
+  ver.failureReason = reason || "Student requested manual admin review";
+  await ver.save();
+
+  res.json({ ok: true, message: "Review request submitted to exam supervisor.", status: "pending_review" });
+}));
+
+// Poll verification status (when student is awaiting supervisor approval)
+app.get("/api/tests/:testId/verification-status/:verificationId", requireStudent("login", "test"), wrap(async (req, res) => {
+  const ver = await Verification.findOne({ _id: req.params.verificationId, regNo: req.student.regNo });
+  if (!ver) return res.status(404).json({ error: "Verification record not found" });
+
+  if (ver.status === "admin_approved" || ver.status === "passed") {
+    let sid = req.token && req.token.sid;
+    if (!sid) {
+      sid = await startSession(req.student.regNo);
+    }
+    const testToken = sign(
+      {
+        purpose: "test",
+        regNo: req.student.regNo,
+        sid: sid || crypto.randomUUID(),
+        testId: req.params.testId,
+        verificationId: String(ver._id),
+      },
+      TEST_TOKEN_TTL
+    );
+    return res.json({ status: ver.status, match: true, token: testToken });
+  }
+
+  res.json({ status: ver.status, match: false });
+}));
+
+// Examination activity tracking (Electron & browser window events)
+app.post("/api/test/activity", requireStudent("test"), wrap(async (req, res) => {
+  const { testId, testTitle, eventType, tabTitle, tabUrl, duration, metadata } = req.body;
+  if (!eventType) return res.status(400).json({ error: "eventType is required" });
+
+  await ActivityLog.create({
+    regNo: req.student.regNo,
+    studentId: req.student._id,
+    testId: testId || req.token.testId || "",
+    testTitle: testTitle || "",
+    sessionId: req.token.sid || "",
+    eventType: String(eventType).toUpperCase(),
+    timestamp: new Date(),
+    tabTitle: String(tabTitle || ""),
+    tabUrl: String(tabUrl || ""),
+    duration: Number(duration) || 0,
+    metadata: metadata || {},
+  });
+
+  res.json({ ok: true });
+}));
+
 // ---------- STUDENT: DURING THE TEST ----------
 // Keeps the session alive (the app calls this every ~30 seconds)
 app.post("/api/session/heartbeat", requireStudent("test"), wrap(async (req, res) => {
@@ -527,7 +690,27 @@ app.post("/api/identity/check", requireStudent("test"), (req, res) => {
 });
 
 // Questions are sent WITHOUT the correct answers
+// STRICT SECURITY: Verifies that identity check was completed for this test
 app.get("/api/tests/:id/questions", requireStudent("test"), wrap(async (req, res) => {
+  if (req.token.testId && req.token.testId !== req.params.id) {
+    return res.status(403).json({ error: "This authorization token is not valid for this test.", code: "TEST_MISMATCH" });
+  }
+
+  if (req.token.verificationId) {
+    const ver = await Verification.findOne({
+      _id: req.token.verificationId,
+      regNo: req.student.regNo,
+      testId: req.params.id,
+      status: { $in: ["passed", "admin_approved"] },
+    });
+    if (!ver) {
+      return res.status(403).json({
+        error: "Identity re-verification is required before starting this test.",
+        code: "VERIFICATION_REQUIRED",
+      });
+    }
+  }
+
   const test = await data.getTest(req.params.id);
   if (!test) return res.status(404).json({ error: "Test not found" });
   const questions = await data.getQuestions(test);
@@ -701,7 +884,7 @@ app.get("/api/admin/students", requireAdmin, wrap(async (req, res) => {
   });
 }));
 
-// One student: registered face, every attempt, every violation with its snapshot
+// One student: registered face, every attempt, every violation with its snapshot, verifications and activity
 app.get("/api/admin/students/:regNo", requireAdmin, wrap(async (req, res) => {
   const regNo = cleanReg(req.params.regNo);
   const doc = validReg(regNo)
@@ -709,7 +892,12 @@ app.get("/api/admin/students/:regNo", requireAdmin, wrap(async (req, res) => {
     : null;
   if (!doc) return res.status(404).json({ error: "Student not found" });
 
-  const attempts = await Attempt.find({ regNo }).sort({ submittedAt: -1 }).lean();
+  const [attempts, verifications, activityLogs] = await Promise.all([
+    Attempt.find({ regNo }).sort({ submittedAt: -1 }).lean(),
+    Verification.find({ regNo }).sort({ verifiedAt: -1 }).limit(30).lean(),
+    ActivityLog.find({ regNo }).sort({ timestamp: -1 }).limit(100).lean(),
+  ]);
+
   const violations = attempts.length
     ? await Violation.find({ attemptId: { $in: attempts.map((a) => a._id) } }).sort({ timestamp: 1 }).lean()
     : [];
@@ -727,6 +915,21 @@ app.get("/api/admin/students/:regNo", requireAdmin, wrap(async (req, res) => {
       snapshotUrl: v.snapshot || null,
     });
   });
+
+  // Calculate activity statistics
+  let totalBlurEvents = 0;
+  let totalAwaySeconds = 0;
+  let totalTabSwitches = 0;
+  activityLogs.forEach((log) => {
+    if (log.eventType === "WINDOW_BLUR" || log.eventType === "WINDOW_FOCUS") {
+      totalBlurEvents += 1;
+      totalAwaySeconds += log.duration || 0;
+    }
+    if (log.eventType === "TAB_SWITCH" || log.eventType === "ACTIVE_TAB_CHANGED") {
+      totalTabSwitches += 1;
+    }
+  });
+
   const registered = !!(doc.face && doc.face.photo);
   res.json({
     student: {
@@ -737,6 +940,37 @@ app.get("/api/admin/students/:regNo", requireAdmin, wrap(async (req, res) => {
       facePhotoUrl: registered ? doc.face.photo : null,
       registeredAt: registered ? doc.face.registeredAt : null,
     },
+    activitySummary: {
+      totalBlurEvents,
+      totalAwaySeconds,
+      totalTabSwitches,
+      logsCount: activityLogs.length,
+    },
+    verifications: verifications.map((v) => ({
+      id: String(v._id),
+      testId: v.testId,
+      testTitle: v.testTitle,
+      status: v.status,
+      verifiedAt: v.verifiedAt,
+      distance: v.distance,
+      threshold: v.threshold,
+      photoUrl: v.photo || null,
+      failureReason: v.failureReason,
+      reviewedBy: v.reviewedBy,
+      reviewedAt: v.reviewedAt,
+      adminNotes: v.adminNotes,
+    })),
+    activityLogs: activityLogs.map((l) => ({
+      id: String(l._id),
+      eventType: l.eventType,
+      testId: l.testId,
+      testTitle: l.testTitle,
+      timestamp: l.timestamp,
+      tabTitle: l.tabTitle,
+      tabUrl: l.tabUrl,
+      duration: l.duration,
+      metadata: l.metadata,
+    })),
     attempts: attempts.map((a) => ({
       id: String(a._id),
       testTitle: a.testTitle,
@@ -779,6 +1013,54 @@ app.get("/api/admin/records", requireAdmin, wrap(async (req, res) => {
       };
     }),
   });
+}));
+
+// Admin: View all identity verifications
+app.get("/api/admin/verifications", requireAdmin, wrap(async (req, res) => {
+  const list = await Verification.find().sort({ verifiedAt: -1 }).limit(100).lean();
+  res.json({
+    verifications: list.map((v) => ({
+      id: String(v._id),
+      regNo: v.regNo,
+      studentName: v.studentName,
+      studentEmail: v.studentEmail,
+      testId: v.testId,
+      testTitle: v.testTitle,
+      status: v.status,
+      verifiedAt: v.verifiedAt,
+      distance: v.distance,
+      threshold: v.threshold,
+      photoUrl: v.photo || null,
+      failureReason: v.failureReason,
+      reviewedBy: v.reviewedBy,
+      reviewedAt: v.reviewedAt,
+      adminNotes: v.adminNotes,
+    })),
+  });
+}));
+
+// Admin: One-click approval of verification (for manual reviews or false failures)
+app.post("/api/admin/verifications/:id/approve", requireAdmin, wrap(async (req, res) => {
+  const ver = await Verification.findById(req.params.id);
+  if (!ver) return res.status(404).json({ error: "Verification record not found" });
+
+  ver.status = "admin_approved";
+  ver.reviewedBy = req.admin.email;
+  ver.reviewedAt = new Date();
+  ver.adminNotes = req.body.notes || "Approved by exam supervisor";
+  await ver.save();
+
+  res.json({ ok: true, status: "admin_approved" });
+}));
+
+// Admin: View activity logs across tests and students
+app.get("/api/admin/activity", requireAdmin, wrap(async (req, res) => {
+  const query = {};
+  if (req.query.regNo) query.regNo = cleanReg(req.query.regNo);
+  if (req.query.testId) query.testId = String(req.query.testId);
+
+  const logs = await ActivityLog.find(query).sort({ timestamp: -1 }).limit(200).lean();
+  res.json({ logs });
 }));
 
 // Lets the student register the face again (for example after a wrong or poor photo)

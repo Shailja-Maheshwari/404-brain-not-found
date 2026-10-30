@@ -84,4 +84,55 @@ const Violation = mongoose.model(
   })
 );
 
-module.exports = { Student, Otp, Lock, Attempt, Violation };
+// One document per identity verification attempt before starting every test
+const Verification = mongoose.model(
+  "Verification",
+  new Schema(
+    {
+      regNo: { type: String, required: true, index: true },
+      studentId: { type: Schema.Types.ObjectId, ref: "Student" },
+      studentName: String,
+      studentEmail: String,
+      testId: { type: String, required: true, index: true },
+      testTitle: String,
+      status: {
+        type: String,
+        enum: ["passed", "failed", "pending_review", "admin_approved"],
+        required: true,
+        index: true,
+      },
+      verifiedAt: { type: Date, default: Date.now, index: true },
+      distance: Number,
+      threshold: Number,
+      photo: String, // base64 face snapshot captured during verification
+      failureReason: String,
+      adminNotes: String,
+      reviewedBy: String,
+      reviewedAt: Date,
+    },
+    { timestamps: true }
+  )
+);
+
+// One document per examination activity event (window blur, focus return, tab switches, blocked apps)
+const ActivityLog = mongoose.model(
+  "ActivityLog",
+  new Schema(
+    {
+      regNo: { type: String, required: true, index: true },
+      studentId: { type: Schema.Types.ObjectId, ref: "Student" },
+      testId: { type: String, required: true, index: true },
+      testTitle: String,
+      sessionId: { type: String, index: true },
+      eventType: { type: String, required: true, index: true },
+      timestamp: { type: Date, default: Date.now, index: true },
+      tabTitle: { type: String, default: "" },
+      tabUrl: { type: String, default: "" },
+      duration: { type: Number, default: 0 }, // seconds away from the exam window
+      metadata: { type: Schema.Types.Mixed, default: {} },
+    },
+    { timestamps: true }
+  )
+);
+
+module.exports = { Student, Otp, Lock, Attempt, Violation, Verification, ActivityLog };

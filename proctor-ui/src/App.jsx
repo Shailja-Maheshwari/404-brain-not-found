@@ -441,12 +441,15 @@ function CameraFrame({ videoRef, scanning }) {
 // ----------------------------------------------------
 // FACE GATEKEEPER (REGISTRATION & VERIFICATION VIA BACKEND)
 // ----------------------------------------------------
-function FaceGatekeeper({ student, token, isFaceRegistered, onComplete, onBack }) {
+// ----------------------------------------------------
+// FIRST-TIME FACE REGISTRATION (ENROLLS ONCE INTO MONGODB)
+// ----------------------------------------------------
+function FaceRegistrationGate({ student, token, onComplete, onBack }) {
   const videoRef = useRef(null);
   const engineRef = useRef(null);
   const matcherRef = useRef(null);
   const [phase, setPhase] = useState("loading");
-  const [msg, setMsg] = useState("Loading AI proctoring models...");
+  const [msg, setMsg] = useState("Initializing camera and AI models...");
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -463,16 +466,12 @@ function FaceGatekeeper({ student, token, isFaceRegistered, onComplete, onBack }
         if (cancelled) return;
         matcherRef.current = matcher;
 
-        setPhase(isFaceRegistered ? "verify" : "register");
-        setMsg(
-          isFaceRegistered
-            ? "Look directly into the camera to verify your identity."
-            : "First-time face registration: Look into the camera."
-        );
+        setPhase("ready");
+        setMsg("Look directly into the camera to register your baseline face.");
       } catch (e) {
         if (!cancelled) {
           setPhase("error");
-          setMsg("Failed to initialize webcam or AI models: " + e.message);
+          setError("Webcam or AI model error: " + e.message);
         }
       }
     })();
@@ -480,76 +479,56 @@ function FaceGatekeeper({ student, token, isFaceRegistered, onComplete, onBack }
       cancelled = true;
       if (engineRef.current) engineRef.current.stop();
     };
-  }, [isFaceRegistered]);
+  }, []);
 
-  const runAction = async () => {
+  const handleRegister = async () => {
     const matcher = matcherRef.current;
     const engine = engineRef.current;
     const video = videoRef.current;
-    setPhase((p) => p + "-working");
+    setPhase("working");
     setError("");
 
-    const fail = (m) => {
-      setError(m);
-      setPhase(isFaceRegistered ? "verify" : "register");
-    };
-
     try {
-      if (!isFaceRegistered) {
-        setMsg("Capturing face landmarks reference (5 frames)...");
-        const r = await matcher.enroll(video);
-        if (!r.ok) return fail(r.reason || "Could not detect a clear, single face.");
-
-        setMsg("Liveness check: Please blink twice...");
-        const live = await engine.liveness({ blinks: 2, timeoutMs: 10000 });
-        if (!live) return fail("Liveness check failed. Please blink visibly twice.");
-
-        const photo = capturePhoto(video);
-        if (!photo) return fail("Failed to capture face photo.");
-
-        setMsg("Saving registered face to MongoDB...");
-        const res = await api("/api/face/register", {
-          method: "POST",
-          token,
-          body: { descriptor: matcher.getReference(), photo },
-        });
-
-        if (!res.token) throw new Error("No test session token returned.");
-
-        engine.stop();
-        setPhase("done");
-        setTimeout(() => onComplete(res.token, true), 1200);
-      } else {
-        setMsg("Capturing live face features...");
-        const r = await matcher.enroll(video);
-        if (!r.ok) return fail(r.reason || "Please ensure only your face is visible.");
-
-        setMsg("Liveness check: Please blink twice...");
-        const live = await engine.liveness({ blinks: 2, timeoutMs: 10000 });
-        if (!live) return fail("Liveness check failed. Please blink visibly twice.");
-
-        setMsg("Verifying face against MongoDB database...");
-        const res = await api("/api/auth/face-verify", {
-          method: "POST",
-          token,
-          body: { descriptor: matcher.getReference() },
-        });
-
-        if (!res.match || !res.token) {
-          return fail("Face did not match the registered face for this student.");
-        }
-
-        engine.stop();
-        setPhase("done");
-        setTimeout(() => onComplete(res.token, false), 1200);
+      setMsg("Capturing facial landmarks (5 frames)...");
+      const r = await matcher.enroll(video);
+      if (!r.ok) {
+        setError(r.reason || "Could not detect a clear, single face.");
+        setPhase("ready");
+        return;
       }
+
+      setMsg("Liveness check: Please blink twice visibly...");
+      const live = await engine.liveness({ blinks: 2, timeoutMs: 10000 });
+      if (!live) {
+        setError("Liveness check failed. Please blink visibly twice.");
+        setPhase("ready");
+        return;
+      }
+
+      const photo = capturePhoto(video);
+      if (!photo) {
+        setError("Could not capture webcam snapshot.");
+        setPhase("ready");
+        return;
+      }
+
+      setMsg("Saving registered face securely to MongoDB...");
+      const res = await api("/api/face/register", {
+        method: "POST",
+        token,
+        body: { descriptor: matcher.getReference(), photo },
+      });
+
+      if (!res.token) throw new Error("No session token returned.");
+
+      engine.stop();
+      setPhase("done");
+      setTimeout(() => onComplete(res.token), 1000);
     } catch (e) {
-      fail(e.message || "An error occurred during face processing.");
+      setError(e.message || "Registration failed.");
+      setPhase("ready");
     }
   };
-
-  const isWorking = phase.endsWith("-working");
-  const actualPhase = phase.replace("-working", "");
 
   if (phase === "done") {
     return (
@@ -557,35 +536,34 @@ function FaceGatekeeper({ student, token, isFaceRegistered, onComplete, onBack }
         <div className="w-14 h-14 rounded-full bg-green-100 text-green-600 flex items-center justify-center text-2xl mb-5 font-bold">
           ✓
         </div>
-        <h1 className="text-3xl font-bold text-slate-900">Success!</h1>
-        <p className="text-slate-500 mt-1 mb-5">
-          {isFaceRegistered ? "Identity verified successfully." : "Face registered securely in database."}
-        </p>
+        <h1 className="text-3xl font-bold text-slate-900">Registration Complete!</h1>
+        <p className="text-slate-500 mt-1 mb-5">Your face has been enrolled in the database. Proceeding to exam verification...</p>
       </SplitLayout>
     );
   }
 
   return (
     <SplitLayout>
-      <h1 className="text-3xl font-bold text-slate-900">
-        {isFaceRegistered ? "Face Verification" : "Face Registration"}
-      </h1>
+      <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200 mb-3">
+        Step 1: One-Time Face Registration
+      </div>
+      <h1 className="text-3xl font-bold text-slate-900">Face Registration</h1>
       <p className="text-slate-500 mt-1 mb-5">
         {student.name} · <span className="font-mono">{student.regNo}</span>
       </p>
-      <CameraFrame videoRef={videoRef} scanning={isWorking} />
-      <p className={`text-center mb-3 text-sm ${isWorking ? "text-blue-600 font-medium" : "text-slate-600"}`}>
+      <CameraFrame videoRef={videoRef} scanning={phase === "working"} />
+      <p className={`text-center mb-3 text-sm ${phase === "working" ? "text-blue-600 font-medium" : "text-slate-600"}`}>
         {msg}
       </p>
       {error && <div className="rounded-xl bg-red-50 text-red-700 text-sm p-3 mb-3 border border-red-200">{error}</div>}
       <button
         className={primaryBtn}
-        onClick={runAction}
-        disabled={actualPhase === "loading" || actualPhase === "error" || isWorking}
+        onClick={handleRegister}
+        disabled={phase !== "ready"}
       >
-        {isWorking ? "Processing..." : isFaceRegistered ? "Verify Face & Proceed" : "Register Face & Proceed"}
+        {phase === "working" ? "Registering Face..." : "Register Face & Continue"}
       </button>
-      <button className="w-full mt-3 text-sm text-slate-500 underline" onClick={onBack} disabled={isWorking}>
+      <button className="w-full mt-3 text-sm text-slate-500 underline" onClick={onBack} disabled={phase === "working"}>
         Back to Dashboard
       </button>
     </SplitLayout>
@@ -593,89 +571,292 @@ function FaceGatekeeper({ student, token, isFaceRegistered, onComplete, onBack }
 }
 
 // ----------------------------------------------------
-// CONSENT SCREEN (LOADS QUESTIONS FROM AIRTABLE)
+// TEST IDENTITY RE-VERIFICATION BEFORE EVERY TEST
 // ----------------------------------------------------
-function Consent({ student, selectedTest, testToken, onStart, onBack }) {
-  const [agreed, setAgreed] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [questions, setQuestions] = useState([]);
-  const [duration, setDuration] = useState(selectedTest.durationSeconds || 300);
+function TestIdentityGate({ student, selectedTest, token, onVerified, onBack }) {
+  const videoRef = useRef(null);
+  const engineRef = useRef(null);
+  const matcherRef = useRef(null);
+  const pollTimerRef = useRef(null);
+
+  const [phase, setPhase] = useState("loading"); // loading, ready, verifying, passed, failed, pending_review, submitting_review
+  const [msg, setMsg] = useState("Starting webcam and loading AI models...");
   const [error, setError] = useState("");
+  const [retriesLeft, setRetriesLeft] = useState(3);
+  const [verificationId, setVerificationId] = useState(null);
+  const [agreed, setAgreed] = useState(false);
+  const [matchScore, setMatchScore] = useState(null);
 
   useEffect(() => {
-    let active = true;
+    let cancelled = false;
     (async () => {
       try {
-        setLoading(true);
-        const data = await api(`/api/tests/${selectedTest.id}/questions`, { token: testToken });
-        if (!active) return;
-        setQuestions(data.questions || []);
-        if (data.test && data.test.durationSeconds) setDuration(data.test.durationSeconds);
-      } catch (err) {
-        if (!active) return;
-        setError(err.message || "Failed to load questions from Airtable.");
-      } finally {
-        if (active) setLoading(false);
+        const engine = new ProctorEngine(videoRef.current, { enableAudio: false, snapshots: true });
+        engineRef.current = engine;
+        await engine.start();
+        if (cancelled) { engine.stop(); return; }
+
+        const matcher = new FaceMatcher({ threshold: FACE_THRESHOLD });
+        await matcher.load();
+        if (cancelled) return;
+        matcherRef.current = matcher;
+
+        setPhase("ready");
+        setMsg("Look directly into the camera to verify your identity before starting this test.");
+      } catch (e) {
+        if (!cancelled) {
+          setPhase("error");
+          setError("Failed to initialize camera or models: " + e.message);
+        }
       }
     })();
-    return () => { active = false; };
-  }, [selectedTest, testToken]);
 
-  const rules = [
-    "Webcam and microphone will remain active throughout the test.",
-    "Face landmarks, eye gaze direction, head movement and background audio are monitored.",
-    "Multiple displays, tab switching, and unauthorized applications will trigger violations.",
-    `${MAX_STRIKES} serious violations will cause automatic test submission.`,
-    `This assessment contains ${questions.length} questions with a ${Math.round(duration / 60)}-minute time limit.`,
-  ];
+    return () => {
+      cancelled = true;
+      if (engineRef.current) engineRef.current.stop();
+      if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+    };
+  }, []);
+
+  const handleVerifyAndStart = async () => {
+    if (!agreed) {
+      return setError("Please accept the proctoring rules before starting the exam.");
+    }
+    const matcher = matcherRef.current;
+    const engine = engineRef.current;
+    const video = videoRef.current;
+
+    setPhase("verifying");
+    setError("");
+    setMsg("Aligning face and capturing descriptors (5 frames)...");
+
+    try {
+      const r = await matcher.enroll(video);
+      if (!r.ok) {
+        setPhase("failed");
+        setError(r.reason || "Please ensure only your face is visible in the frame.");
+        return;
+      }
+
+      setMsg("Liveness check: Please blink twice visibly...");
+      const live = await engine.liveness({ blinks: 2, timeoutMs: 9000 });
+      if (!live) {
+        setPhase("failed");
+        setError("Liveness check failed. Please blink visibly twice.");
+        return;
+      }
+
+      const photo = capturePhoto(video);
+      if (!photo) {
+        setPhase("failed");
+        setError("Could not capture webcam snapshot. Check camera permissions.");
+        return;
+      }
+
+      setMsg("Verifying face match against registered profile in MongoDB...");
+      const res = await api(`/api/tests/${selectedTest.id}/verify-identity`, {
+        method: "POST",
+        token,
+        body: {
+          descriptor: matcher.getReference(),
+          photo,
+          testTitle: selectedTest.title,
+        },
+      });
+
+      if (!res.match || !res.token) {
+        throw new Error(res.error || "Identity check failed.");
+      }
+
+      // Success!
+      setPhase("passed");
+      setMatchScore(res.verification ? Math.round((1 - (res.verification.distance || 0)) * 100) : 98);
+      setMsg("Identity confirmed! Loading questions from Airtable/MongoDB...");
+
+      // Fetch questions using the verified test session token
+      const questionsData = await api(`/api/tests/${selectedTest.id}/questions`, { token: res.token });
+      const questions = questionsData.questions || [];
+      const duration = questionsData.test?.durationSeconds || selectedTest.durationSeconds || 300;
+
+      if (questions.length === 0) {
+        throw new Error("This test does not have any questions available yet.");
+      }
+
+      if (engineRef.current) engineRef.current.stop();
+
+      setTimeout(() => {
+        onVerified(res.token, questions, duration);
+      }, 1200);
+
+    } catch (err) {
+      setPhase("failed");
+      const left = typeof err.data?.retriesLeft === "number" ? err.data.retriesLeft : Math.max(0, retriesLeft - 1);
+      setRetriesLeft(left);
+      if (err.data?.verificationId) setVerificationId(err.data.verificationId);
+      setError(err.message || "Face identity verification failed. Your face did not match the registered profile.");
+    }
+  };
+
+  // Request supervisor / admin review if verification fails
+  const handleRequestReview = async () => {
+    if (!verificationId) {
+      return setError("No verification record found to review. Please try verifying again.");
+    }
+    setPhase("submitting_review");
+    setError("");
+    try {
+      await api(`/api/tests/${selectedTest.id}/request-review`, {
+        method: "POST",
+        token,
+        body: { verificationId, reason: "Face verification mismatch - student requested supervisor approval" },
+      });
+
+      setPhase("pending_review");
+      setMsg("Review request submitted. Waiting for admin approval...");
+
+      // Poll verification status every 3 seconds
+      pollTimerRef.current = setInterval(async () => {
+        try {
+          const statusRes = await api(`/api/tests/${selectedTest.id}/verification-status/${verificationId}`, { token });
+          if (statusRes.status === "admin_approved" && statusRes.token) {
+            clearInterval(pollTimerRef.current);
+            setPhase("passed");
+            setMsg("Admin approved your identity! Loading exam questions...");
+
+            const questionsData = await api(`/api/tests/${selectedTest.id}/questions`, { token: statusRes.token });
+            const questions = questionsData.questions || [];
+            const duration = questionsData.test?.durationSeconds || selectedTest.durationSeconds || 300;
+
+            if (engineRef.current) engineRef.current.stop();
+            setTimeout(() => {
+              onVerified(statusRes.token, questions, duration);
+            }, 1000);
+          }
+        } catch {}
+      }, 3000);
+    } catch (err) {
+      setPhase("failed");
+      setError(err.message || "Failed to submit review request.");
+    }
+  };
+
+  if (phase === "passed") {
+    return (
+      <SplitLayout>
+        <div className="w-16 h-16 rounded-full bg-green-100 text-green-600 flex items-center justify-center text-3xl mb-5 font-bold animate-bounce">
+          ✓
+        </div>
+        <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-green-50 text-green-700 border border-green-200 mb-3">
+          Identity Verified {matchScore ? `· ${matchScore}% Match` : ""}
+        </div>
+        <h1 className="text-3xl font-bold text-slate-900">Identity Confirmed!</h1>
+        <p className="text-slate-600 mt-2 mb-6">
+          Verified for <b>{selectedTest.title}</b>. Launching exam environment...
+        </p>
+        <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
+          <div className="bg-green-600 h-2 rounded-full animate-pulse w-full" />
+        </div>
+      </SplitLayout>
+    );
+  }
+
+  if (phase === "pending_review") {
+    return (
+      <SplitLayout>
+        <div className="w-16 h-16 rounded-full bg-amber-100 text-amber-600 flex items-center justify-center text-2xl mb-5 font-bold animate-pulse">
+          ⏳
+        </div>
+        <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-200 mb-3">
+          Supervisor Review Pending
+        </div>
+        <h1 className="text-2xl sm:text-3xl font-bold text-slate-900">Awaiting Admin Approval</h1>
+        <p className="text-slate-600 mt-2 mb-4 text-sm leading-relaxed">
+          Your live webcam photo has been submitted to the examination supervisor for manual identity confirmation.
+        </p>
+        <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs mb-6 text-left">
+          <p className="font-semibold mb-1">Please keep this window open.</p>
+          <p className="text-amber-700">As soon as the supervisor clicks <b>Approve</b> in the Admin Portal, your exam will start automatically.</p>
+        </div>
+        <div className="flex items-center justify-center gap-2 text-sm text-slate-500 mb-4">
+          <span className="w-2 h-2 rounded-full bg-amber-500 animate-ping" />
+          Checking approval status every 3 seconds...
+        </div>
+        <button className="w-full text-sm text-slate-500 underline" onClick={onBack}>
+          Cancel &amp; Return to Dashboard
+        </button>
+      </SplitLayout>
+    );
+  }
 
   return (
     <SplitLayout>
-      <h1 className="text-3xl font-bold text-slate-900">Assessment Rules</h1>
-      <p className="text-slate-500 mt-1 mb-5">
-        Test: <b>{selectedTest.title}</b> · Student: {student.name}
+      <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200 mb-3">
+        <span className="w-2 h-2 rounded-full bg-blue-600 animate-pulse" />
+        Mandatory Pre-Test Identity Check
+      </div>
+      <h1 className="text-2xl sm:text-3xl font-bold text-slate-900">Face Verification</h1>
+      <p className="text-slate-500 mt-1 mb-4 text-sm">
+        Assessment: <b>{selectedTest.title}</b> · Student: {student.name} ({student.regNo})
       </p>
 
-      {error ? (
-        <div className="p-4 rounded-xl bg-red-50 text-red-700 text-sm mb-5 border border-red-200">
-          {error}
+      <CameraFrame videoRef={videoRef} scanning={phase === "verifying"} />
+
+      <p className={`text-center mb-3 text-sm ${phase === "verifying" ? "text-blue-600 font-semibold animate-pulse" : "text-slate-600"}`}>
+        {msg}
+      </p>
+
+      {error && (
+        <div className="rounded-xl bg-red-50 text-red-700 text-xs sm:text-sm p-3.5 mb-4 border border-red-200 text-left">
+          <p className="font-semibold text-red-900 mb-0.5">Verification Failed</p>
+          <p>{error}</p>
+          <p className="mt-1 font-semibold text-red-800">
+            {retriesLeft > 0 ? `Attempts Remaining: ${retriesLeft} of 3` : "Maximum retry attempts exhausted."}
+          </p>
         </div>
-      ) : (
-        <ul className="space-y-2.5 mb-5">
-          {rules.map((r, i) => (
-            <li key={i} className="flex gap-3 text-sm text-slate-700">
-              <span className="mt-0.5 w-5 h-5 shrink-0 rounded-full bg-blue-100 text-blue-700 text-xs font-bold flex items-center justify-center">
-                {i + 1}
-              </span>
-              {r}
-            </li>
-          ))}
-        </ul>
       )}
 
-      <label className="flex items-start gap-3 p-4 rounded-xl border border-slate-300 hover:border-blue-400 cursor-pointer mb-5">
+      {/* Proctoring Rules Agreement */}
+      <label className="flex items-start gap-2.5 p-3 rounded-xl border border-slate-200 hover:border-blue-400 cursor-pointer mb-4 text-left">
         <input
           type="checkbox"
-          className="mt-1 w-4 h-4 accent-blue-600"
+          className="mt-0.5 w-4 h-4 accent-blue-600"
           checked={agreed}
           onChange={(e) => setAgreed(e.target.checked)}
-          disabled={loading || questions.length === 0}
+          disabled={phase === "verifying"}
         />
-        <span className="text-sm text-slate-700 font-medium">
-          I understand and agree to the smart proctoring rules and monitoring terms.
+        <span className="text-xs text-slate-700 leading-snug">
+          I agree to the exam proctoring rules: webcam and mic will be monitored, and leaving the window will trigger violations (maximum {MAX_STRIKES} strikes).
         </span>
       </label>
 
-      <button
-        className={primaryBtn}
-        disabled={!agreed || loading || questions.length === 0}
-        onClick={() => onStart(questions, duration)}
-      >
-        {loading ? "Loading Questions from Airtable..." : "Start Test"}
-      </button>
-      <button className="w-full mt-3 text-sm text-slate-500 underline" onClick={onBack}>
-        Back to Dashboard
-      </button>
+      {/* Action Buttons */}
+      <div className="space-y-2.5">
+        <button
+          className={primaryBtn}
+          onClick={handleVerifyAndStart}
+          disabled={phase === "loading" || phase === "verifying" || !agreed || (phase === "failed" && retriesLeft <= 0)}
+        >
+          {phase === "verifying" ? "Verifying Face..." : phase === "failed" ? "Retry Face Verification" : "Verify Face & Start Test"}
+        </button>
+
+        {phase === "failed" && (
+          <button
+            type="button"
+            className="w-full py-2.5 rounded-xl font-semibold text-amber-800 bg-amber-100 hover:bg-amber-200 transition text-sm flex items-center justify-center gap-1.5"
+            onClick={handleRequestReview}
+          >
+            <span>Request Supervisor / Admin Review</span>
+          </button>
+        )}
+
+        <button
+          className="w-full mt-2 text-sm text-slate-500 underline"
+          onClick={onBack}
+          disabled={phase === "verifying"}
+        >
+          Back to Dashboard
+        </button>
+      </div>
     </SplitLayout>
   );
 }
@@ -769,12 +950,82 @@ function Test({ student, selectedTest, questions, durationSeconds, testToken, on
     }
   };
 
+  // Examination activity tracking (Window blur/focus, duration away, tab switches)
+  useEffect(() => {
+    let blurTimestamp = null;
+
+    const logActivity = (eventType, duration = 0, meta = {}) => {
+      api("/api/test/activity", {
+        method: "POST",
+        token: testToken,
+        body: {
+          testId: selectedTest.id,
+          testTitle: selectedTest.title,
+          eventType,
+          duration,
+          tabTitle: document.title,
+          tabUrl: window.location.href,
+          metadata: meta,
+        },
+      }).catch(() => {});
+    };
+
+    const handleBlur = () => {
+      blurTimestamp = Date.now();
+      logActivity("WINDOW_BLUR", 0, { timestamp: blurTimestamp });
+    };
+
+    const handleFocus = () => {
+      if (blurTimestamp) {
+        const awaySec = Math.round((Date.now() - blurTimestamp) / 1000);
+        blurTimestamp = null;
+        logActivity("WINDOW_FOCUS", awaySec, { awaySeconds: awaySec });
+      }
+    };
+
+    const handleVisibility = () => {
+      if (document.hidden) {
+        blurTimestamp = Date.now();
+        logActivity("TAB_SWITCH", 0, { hidden: true });
+      } else if (blurTimestamp) {
+        const awaySec = Math.round((Date.now() - blurTimestamp) / 1000);
+        blurTimestamp = null;
+        logActivity("WINDOW_FOCUS", awaySec, { awaySeconds: awaySec });
+      }
+    };
+
+    window.addEventListener("blur", handleBlur);
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleVisibility);
+
+    return () => {
+      window.removeEventListener("blur", handleBlur);
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, [selectedTest, testToken]);
+
   // Connect Electron IPC if inside Electron desktop app
   useEffect(() => {
     const proctor = window.proctor;
     if (!proctor) return undefined;
 
     const offEvent = proctor.onEvent((entry) => {
+      // Forward to backend activity log
+      api("/api/test/activity", {
+        method: "POST",
+        token: testToken,
+        body: {
+          testId: selectedTest.id,
+          testTitle: selectedTest.title,
+          eventType: entry.eventType,
+          duration: entry.details?.awaySeconds || 0,
+          tabTitle: document.title,
+          tabUrl: window.location.href,
+          metadata: entry.details || {},
+        },
+      }).catch(() => {});
+
       eventsRef.current.push({
         type: entry.eventType,
         severity: entry.severity === "violation" ? "medium" : "low",
@@ -1114,16 +1365,21 @@ export default function App() {
 
   const handleStartTest = (test) => {
     setSelectedTest(test);
-    setStage("faceGate");
+    if (!faceRegistered) {
+      setStage("registerFace");
+    } else {
+      setStage("verifyIdentity");
+    }
   };
 
-  const handleFaceComplete = (generatedTestToken, newlyRegistered) => {
-    setTestToken(generatedTestToken);
-    if (newlyRegistered) setFaceRegistered(true);
-    setStage("consent");
+  const handleRegisterDone = (newToken) => {
+    setFaceRegistered(true);
+    setStudentToken(newToken);
+    setStage("verifyIdentity");
   };
 
-  const handleConsentStart = (questions, duration) => {
+  const handleIdentityVerified = (verifiedTestToken, questions, duration) => {
+    setTestToken(verifiedTestToken);
     setTestQuestions(questions);
     setTestDuration(duration);
     setStage("test");
@@ -1155,24 +1411,23 @@ export default function App() {
       />
     );
 
-  if (stage === "faceGate")
+  if (stage === "registerFace")
     return (
-      <FaceGatekeeper
+      <FaceRegistrationGate
         student={student}
         token={studentToken}
-        isFaceRegistered={faceRegistered}
-        onComplete={handleFaceComplete}
+        onComplete={handleRegisterDone}
         onBack={() => setStage("dashboard")}
       />
     );
 
-  if (stage === "consent")
+  if (stage === "verifyIdentity")
     return (
-      <Consent
+      <TestIdentityGate
         student={student}
         selectedTest={selectedTest}
-        testToken={testToken}
-        onStart={handleConsentStart}
+        token={studentToken}
+        onVerified={handleIdentityVerified}
         onBack={() => setStage("dashboard")}
       />
     );

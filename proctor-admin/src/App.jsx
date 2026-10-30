@@ -445,8 +445,69 @@ function StudentDetail({ token, regNo, onBack, onAuthError, onChanged }) {
           </div>
         </div>
 
-        {/* Attempts */}
+        {/* Attempts & Activity */}
         <div className="space-y-4">
+          {/* Examination Window & Focus Activity */}
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
+            <h3 className="text-base font-bold text-slate-800 mb-3 flex items-center gap-2">
+              <span>🖥️</span> Examination Window &amp; Focus Tracking
+            </h3>
+            <div className="grid grid-cols-3 gap-3">
+              <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-100">
+                <p className="text-xs text-slate-500 font-medium">Focus Loss Events</p>
+                <p className="text-2xl font-bold text-slate-900 mt-1">{data.activitySummary?.totalBlurEvents ?? 0}</p>
+                <p className="text-[11px] text-slate-400 mt-0.5">Left exam window</p>
+              </div>
+              <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-100">
+                <p className="text-xs text-slate-500 font-medium">Time Away from Exam</p>
+                <p className="text-2xl font-bold text-slate-900 mt-1">{data.activitySummary?.totalAwaySeconds ?? 0}s</p>
+                <p className="text-[11px] text-slate-400 mt-0.5">Total seconds away</p>
+              </div>
+              <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-100">
+                <p className="text-xs text-slate-500 font-medium">Tab Switches</p>
+                <p className="text-2xl font-bold text-slate-900 mt-1">{data.activitySummary?.totalTabSwitches ?? 0}</p>
+                <p className="text-[11px] text-slate-400 mt-0.5">Navigated away</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Pre-Test Identity Verifications */}
+          {(data.verifications && data.verifications.length > 0) && (
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
+              <h3 className="text-base font-bold text-slate-800 mb-3 flex items-center gap-2">
+                <span>📸</span> Pre-Test Identity Verifications ({data.verifications.length})
+              </h3>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {data.verifications.map((v) => (
+                  <div key={v.id} className="p-3 rounded-xl border border-slate-200 bg-slate-50 flex gap-3 items-center">
+                    <Photo
+                      src={imgUrl(v.photoUrl)}
+                      className="w-16 h-16 rounded-xl object-cover cursor-zoom-in shrink-0 bg-slate-200"
+                      onClick={() => setZoom(imgUrl(v.photoUrl))}
+                      empty="No photo"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-bold text-slate-900 truncate">{v.testTitle || "Online Exam"}</p>
+                      <p className="text-[11px] text-slate-500">{fmtDate(v.verifiedAt)}</p>
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className={`text-[11px] px-2 py-0.5 rounded-full font-bold ${
+                          v.status === "passed" ? "bg-green-100 text-green-700" :
+                          v.status === "admin_approved" ? "bg-blue-100 text-blue-700" :
+                          v.status === "pending_review" ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-700"
+                        }`}>
+                          {v.status.replace("_", " ")}
+                        </span>
+                        <span className="text-[11px] text-slate-500 font-mono">
+                          Dist: {v.distance !== undefined ? v.distance.toFixed(3) : "-"}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           <h3 className="text-lg font-bold text-slate-800">Test attempts ({attempts.length})</h3>
           {attempts.length === 0 && (
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-8 text-center text-slate-400">
@@ -732,11 +793,175 @@ function RecordsTab({ records, loading, onOpen }) {
   );
 }
 
+// ---------- VERIFICATIONS TAB ----------
+function VerificationsTab({ verifications, loading, onApprove, onZoom }) {
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState("All");
+  const [approving, setApproving] = useState(null);
+
+  const q = query.trim().toLowerCase();
+  const visible = verifications.filter((v) => {
+    if (filter !== "All" && v.status !== filter) return false;
+    return (
+      !q ||
+      String(v.regNo).toLowerCase().includes(q) ||
+      (v.studentName || "").toLowerCase().includes(q) ||
+      (v.testTitle || "").toLowerCase().includes(q) ||
+      (v.studentEmail || "").toLowerCase().includes(q)
+    );
+  });
+
+  const handleApprove = async (id) => {
+    setApproving(id);
+    try {
+      await onApprove(id);
+    } finally {
+      setApproving(null);
+    }
+  };
+
+  const pendingCount = verifications.filter((v) => v.status === "pending_review").length;
+  const passedCount = verifications.filter((v) => v.status === "passed").length;
+  const failedCount = verifications.filter((v) => v.status === "failed").length;
+  const approvedCount = verifications.filter((v) => v.status === "admin_approved").length;
+
+  return (
+    <>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
+          <p className="text-xs text-slate-500 font-medium">Total Check-ins</p>
+          <p className="text-2xl font-bold mt-1 text-slate-900">{verifications.length}</p>
+        </div>
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
+          <p className="text-xs text-slate-500 font-medium">Passed Automatically</p>
+          <p className="text-2xl font-bold mt-1 text-green-600">{passedCount}</p>
+        </div>
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
+          <p className="text-xs text-slate-500 font-medium">Pending Review</p>
+          <p className="text-2xl font-bold mt-1 text-amber-600 flex items-center gap-2">
+            {pendingCount}
+            {pendingCount > 0 && <span className="w-2.5 h-2.5 rounded-full bg-amber-500 animate-ping" />}
+          </p>
+        </div>
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
+          <p className="text-xs text-slate-500 font-medium">Supervisor Approved</p>
+          <p className="text-2xl font-bold mt-1 text-blue-600">{approvedCount}</p>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-3 mb-4">
+        <input
+          className={fieldBox + " !py-2.5 flex-1 min-w-[220px]"}
+          placeholder="Search by student name, roll no, or test title"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        <select className={ghostBtn} value={filter} onChange={(e) => setFilter(e.target.value)}>
+          <option value="All">All Statuses ({verifications.length})</option>
+          <option value="pending_review">Pending Review ({pendingCount})</option>
+          <option value="failed">Failed ({failedCount})</option>
+          <option value="passed">Passed ({passedCount})</option>
+          <option value="admin_approved">Admin Approved ({approvedCount})</option>
+        </select>
+      </div>
+
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-slate-500 text-left">
+            <tr>
+              <th className="px-4 py-3 font-medium">Check-in Photo</th>
+              <th className="px-4 py-3 font-medium">Student Details</th>
+              <th className="px-4 py-3 font-medium">Target Exam</th>
+              <th className="px-4 py-3 font-medium">Timestamp</th>
+              <th className="px-4 py-3 font-medium">Match Distance</th>
+              <th className="px-4 py-3 font-medium">Status</th>
+              <th className="px-4 py-3 font-medium text-right">Supervisor Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading && (
+              <tr>
+                <td colSpan={7} className="px-4 py-8 text-center text-slate-400">Loading verifications...</td>
+              </tr>
+            )}
+            {!loading && visible.map((v) => (
+              <tr key={v.id} className="border-t border-slate-100 hover:bg-slate-50 transition">
+                <td className="px-4 py-3">
+                  <Photo
+                    src={imgUrl(v.photoUrl)}
+                    className="w-14 h-14 rounded-xl object-cover cursor-zoom-in shrink-0 bg-slate-200 border border-slate-300"
+                    onClick={() => onZoom(imgUrl(v.photoUrl))}
+                    empty="No photo"
+                  />
+                </td>
+                <td className="px-4 py-3">
+                  <p className="font-semibold text-slate-900">{v.studentName || "Student"}</p>
+                  <p className="text-xs text-slate-500 font-mono">{v.regNo}</p>
+                  <p className="text-xs text-slate-400">{v.studentEmail}</p>
+                </td>
+                <td className="px-4 py-3">
+                  <p className="font-semibold text-blue-900">{v.testTitle || "Online Exam"}</p>
+                  <p className="text-xs text-slate-400 font-mono">{v.testId}</p>
+                </td>
+                <td className="px-4 py-3 whitespace-nowrap text-xs text-slate-600">
+                  {fmtDate(v.verifiedAt)}
+                </td>
+                <td className="px-4 py-3 font-mono text-xs">
+                  <span className={v.distance < (v.threshold || 0.45) ? "text-green-600 font-bold" : "text-red-600 font-bold"}>
+                    {v.distance !== undefined ? v.distance.toFixed(3) : "-"}
+                  </span>
+                  <span className="text-slate-400"> / {v.threshold || 0.45}</span>
+                </td>
+                <td className="px-4 py-3">
+                  <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${
+                    v.status === "passed" ? "bg-green-100 text-green-700" :
+                    v.status === "admin_approved" ? "bg-blue-100 text-blue-700" :
+                    v.status === "pending_review" ? "bg-amber-100 text-amber-700 animate-pulse border border-amber-300" :
+                    "bg-red-100 text-red-700"
+                  }`}>
+                    {v.status === "pending_review" ? "Pending Review" :
+                     v.status === "admin_approved" ? "Admin Approved" :
+                     v.status === "passed" ? "Passed" : "Failed"}
+                  </span>
+                  {v.failureReason && (
+                    <p className="text-[11px] text-slate-400 mt-1 max-w-[200px] truncate">{v.failureReason}</p>
+                  )}
+                </td>
+                <td className="px-4 py-3 text-right whitespace-nowrap">
+                  {v.status !== "admin_approved" && v.status !== "passed" ? (
+                    <button
+                      onClick={() => handleApprove(v.id)}
+                      disabled={approving === v.id}
+                      className="px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm transition disabled:opacity-50"
+                    >
+                      {approving === v.id ? "Approving..." : "Approve Identity"}
+                    </button>
+                  ) : (
+                    <span className="text-xs text-slate-400 font-medium">✓ Verified</span>
+                  )}
+                </td>
+              </tr>
+            ))}
+            {!loading && visible.length === 0 && (
+              <tr>
+                <td colSpan={7} className="px-4 py-8 text-center text-slate-400">
+                  {verifications.length === 0 ? "No identity verifications recorded yet." : "No verifications match the filters."}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
 // ---------- DASHBOARD ----------
 function Dashboard({ token, adminEmail, onLogout, onAuthError }) {
-  const [tab, setTab] = useState("students"); // students | records
+  const [tab, setTab] = useState("students"); // students | records | verifications
   const [students, setStudents] = useState([]);
   const [records, setRecords] = useState([]);
+  const [verifications, setVerifications] = useState([]);
   const [health, setHealth] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -750,12 +975,14 @@ function Dashboard({ token, adminEmail, onLogout, onAuthError }) {
     if (loadingRef.current) return;
     loadingRef.current = true;
     try {
-      const [s, r] = await Promise.all([
+      const [s, r, v] = await Promise.all([
         api("/api/admin/students", { token }),
         api("/api/admin/records", { token }),
+        api("/api/admin/verifications", { token }),
       ]);
       setStudents(listOf(s, "students"));
       setRecords(listOf(r, "records"));
+      setVerifications(listOf(v, "verifications"));
       setError("");
       setUpdatedAt(Date.now());
       api("/api/health").then(setHealth).catch((e) => setHealth({ error: e.message }));
@@ -777,12 +1004,29 @@ function Dashboard({ token, adminEmail, onLogout, onAuthError }) {
     return () => clearInterval(id);
   }, [auto, selected, load]);
 
-  const tabBtn = (id, label, count) => (
+  const handleApproveVerification = async (id) => {
+    await api("/api/admin/verifications/" + id + "/approve", { method: "POST", token });
+    load();
+  };
+
+  const pendingReviewCount = verifications.filter((v) => v.status === "pending_review").length;
+
+  const tabBtn = (id, label, count, badge) => (
     <button
       onClick={() => setTab(id)}
-      className={`px-4 py-2 rounded-xl text-sm font-semibold transition ${tab === id ? "bg-blue-600 text-white shadow" : "bg-white border border-slate-300 text-slate-600 hover:bg-slate-50"}`}
+      className={`px-4 py-2 rounded-xl text-sm font-semibold transition flex items-center gap-2 ${
+        tab === id
+          ? "bg-blue-600 text-white shadow"
+          : "bg-white border border-slate-300 text-slate-600 hover:bg-slate-50"
+      }`}
     >
-      {label} <span className={tab === id ? "text-blue-100" : "text-slate-400"}>({count})</span>
+      <span>{label}</span>
+      <span className={tab === id ? "text-blue-100" : "text-slate-400"}>({count})</span>
+      {badge > 0 && (
+        <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-500 text-white animate-pulse">
+          {badge}
+        </span>
+      )}
     </button>
   );
 
@@ -818,9 +1062,10 @@ function Dashboard({ token, adminEmail, onLogout, onAuthError }) {
         ) : (
           <>
             <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 {tabBtn("students", "Students", students.length)}
                 {tabBtn("records", "Test records", records.length)}
+                {tabBtn("verifications", "Verifications", verifications.length, pendingReviewCount)}
               </div>
               <div className="flex items-center gap-3">
                 <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
@@ -833,10 +1078,19 @@ function Dashboard({ token, adminEmail, onLogout, onAuthError }) {
 
             {error && <div className="rounded-xl bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3 mb-4">{error}</div>}
 
-            {tab === "students" ? (
+            {tab === "students" && (
               <StudentsTab students={students} loading={loading} onOpen={setSelected} onZoom={setZoom} />
-            ) : (
+            )}
+            {tab === "records" && (
               <RecordsTab records={records} loading={loading} onOpen={setSelected} />
+            )}
+            {tab === "verifications" && (
+              <VerificationsTab
+                verifications={verifications}
+                loading={loading}
+                onApprove={handleApproveVerification}
+                onZoom={setZoom}
+              />
             )}
 
             <div className="mt-4 space-y-1">
