@@ -472,8 +472,10 @@ app.post("/api/face/register", requireStudent("login"), wrap(async (req, res) =>
   }
   res.json({
     ok: true,
-    token: sign({ purpose: "test", regNo: s.regNo, sid }, TEST_TOKEN_TTL),
+    token: sign({ purpose: "login", regNo: s.regNo, sid }, STUDENT_TOKEN_TTL),
     student: publicStudent(s),
+    faceRegistered: true,
+    faceDescriptor: req.body.descriptor,
     maxStrikes: MAX_STRIKES,
   });
 }));
@@ -495,14 +497,20 @@ app.post("/api/auth/face-verify", requireStudent("login"), wrap(async (req, res)
   }
   await clearFails(key);
 
-  const sid = await startSession(s.regNo);
-  if (!sid) return res.status(409).json({ error: "This account is already logged in on another device.", code: "ALREADY_LOGGED_IN" });
   res.json({
     match: true,
-    token: sign({ purpose: "test", regNo: s.regNo, sid }, TEST_TOKEN_TTL),
+    token: sign({ purpose: "login", regNo: s.regNo }, STUDENT_TOKEN_TTL),
     student: publicStudent(s),
-    maxStrikes: MAX_STRIKES,
+    faceRegistered: true,
+    faceDescriptor: Array.from(s.face.descriptor),
   });
+}));
+
+// Provide registered face reference descriptor for live comparison in exam
+app.get("/api/face/reference", requireStudent("test", "login"), wrap(async (req, res) => {
+  const s = req.student;
+  if (!hasFace(s)) return res.status(404).json({ error: "No registered face found." });
+  res.json({ descriptor: Array.from(s.face.descriptor) });
 }));
 
 // ---------- STUDENT: TEST IDENTITY RE-VERIFICATION BEFORE EVERY TEST ----------
@@ -573,12 +581,13 @@ app.post("/api/tests/:testId/verify-identity", requireStudent("login", "test"), 
 
   await clearFails(key);
 
-  const sid = await startSession(s.regNo);
+  let sid = req.token && req.token.sid;
   if (!sid) {
-    return res.status(409).json({
-      error: "This account is already logged in on another device.",
-      code: "ALREADY_LOGGED_IN",
-    });
+    sid = await startSession(s.regNo);
+    if (!sid) {
+      sid = crypto.randomUUID();
+      await Student.updateOne({ regNo: s.regNo }, { $set: { session: { id: sid, lastSeen: new Date() } } });
+    }
   }
 
   const testToken = sign(
@@ -600,6 +609,7 @@ app.post("/api/tests/:testId/verify-identity", requireStudent("login", "test"), 
       status: "passed",
       distance: Number(distance.toFixed(4)),
     },
+    faceDescriptor: Array.from(s.face.descriptor),
     student: publicStudent(s),
     maxStrikes: MAX_STRIKES,
   });
@@ -640,7 +650,8 @@ app.get("/api/tests/:testId/verification-status/:verificationId", requireStudent
       },
       TEST_TOKEN_TTL
     );
-    return res.json({ status: ver.status, match: true, token: testToken });
+    const faceDescriptor = req.student.face && req.student.face.descriptor ? Array.from(req.student.face.descriptor) : null;
+    return res.json({ status: ver.status, match: true, token: testToken, faceDescriptor });
   }
 
   res.json({ status: ver.status, match: false });

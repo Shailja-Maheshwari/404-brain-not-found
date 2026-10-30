@@ -269,6 +269,168 @@ function StudentLogin({ onDone }) {
 }
 
 // ----------------------------------------------------
+// LOGIN FACE VERIFICATION (VERIFIES RETURNING STUDENTS BEFORE DASHBOARD)
+// ----------------------------------------------------
+function LoginFaceVerificationGate({ student, token, onComplete, onBack }) {
+  const videoRef = useRef(null);
+  const matcherRef = useRef(null);
+  const [phase, setPhase] = useState("loading"); // loading, ready, verifying, done, failed
+  const [msg, setMsg] = useState("Starting camera and loading AI face recognition...");
+  const [error, setError] = useState("");
+  const [attemptsLeft, setAttemptsLeft] = useState(3);
+
+  useEffect(() => {
+    let cancelled = false;
+    let stream = null;
+    (async () => {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" },
+          audio: false,
+        });
+        if (cancelled) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          await videoRef.current.play().catch(() => {});
+        }
+
+        const matcher = new FaceMatcher({ threshold: FACE_THRESHOLD });
+        await matcher.load();
+        if (cancelled) return;
+        matcherRef.current = matcher;
+
+        setPhase("ready");
+        setMsg("Look directly into the camera to verify your identity before entering the student portal.");
+      } catch (err) {
+        if (!cancelled) {
+          setPhase("failed");
+          setError("Webcam or AI model error: " + (err.message || "Could not access camera."));
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (videoRef.current && videoRef.current.srcObject) {
+        videoRef.current.srcObject.getTracks().forEach((t) => t.stop());
+      }
+    };
+  }, []);
+
+  const handleVerify = async () => {
+    const matcher = matcherRef.current;
+    const video = videoRef.current;
+    if (!video || !matcher) return;
+
+    setPhase("verifying");
+    setError("");
+    setMsg("Analyzing facial features (3 frames)...");
+
+    try {
+      const r = await matcher._collect(video, 3);
+      if (!r.ok) {
+        setPhase("failed");
+        setError(r.reason || "Could not detect a clear, single face.");
+        return;
+      }
+
+      // Average descriptors across captured frames
+      const avg = new Float32Array(128);
+      r.descriptors.forEach((d) => d.forEach((v, i) => (avg[i] += v / r.descriptors.length)));
+
+      setMsg("Verifying face against your registered baseline in MongoDB...");
+      const res = await api("/api/auth/face-verify", {
+        method: "POST",
+        token,
+        body: { descriptor: Array.from(avg) },
+      });
+
+      if (!res.match || !res.token) {
+        throw new Error(res.error || "Face verification failed.");
+      }
+
+      setPhase("done");
+      setMsg("Identity confirmed! Loading student dashboard...");
+      if (videoRef.current && videoRef.current.srcObject) {
+        videoRef.current.srcObject.getTracks().forEach((t) => t.stop());
+      }
+      setTimeout(() => {
+        onComplete(res.token, res.faceDescriptor || Array.from(avg));
+      }, 1000);
+    } catch (err) {
+      setPhase("failed");
+      const left = typeof err.data?.attemptsLeft === "number" ? err.data.attemptsLeft : Math.max(0, attemptsLeft - 1);
+      setAttemptsLeft(left);
+      setError(err.message || "Face does not match the registered student profile. Login denied.");
+    }
+  };
+
+  if (phase === "done") {
+    return (
+      <SplitLayout>
+        <div className="w-16 h-16 rounded-full bg-green-100 text-green-600 flex items-center justify-center text-3xl mb-5 font-bold animate-bounce">
+          ✓
+        </div>
+        <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-green-50 text-green-700 border border-green-200 mb-3">
+          Face Verified
+        </div>
+        <h1 className="text-3xl font-bold text-slate-900">Welcome Back, {student.name}!</h1>
+        <p className="text-slate-500 mt-2 mb-6">
+          Identity matched with registered baseline. Entering examination dashboard...
+        </p>
+        <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
+          <div className="bg-green-600 h-2 rounded-full animate-pulse w-full" />
+        </div>
+      </SplitLayout>
+    );
+  }
+
+  return (
+    <SplitLayout>
+      <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200 mb-3">
+        <span className="w-2 h-2 rounded-full bg-blue-600 animate-pulse" />
+        Step 2: Login Face Verification
+      </div>
+      <h1 className="text-3xl font-bold text-slate-900">Verify Your Identity</h1>
+      <p className="text-slate-500 mt-1 mb-4 text-sm">
+        {student.name} · <span className="font-mono">{student.regNo}</span>
+      </p>
+
+      <CameraFrame videoRef={videoRef} scanning={phase === "verifying"} />
+
+      <p className={`text-center mb-3 text-sm ${phase === "verifying" ? "text-blue-600 font-semibold animate-pulse" : "text-slate-600"}`}>
+        {msg}
+      </p>
+
+      {error && (
+        <div className="rounded-xl bg-red-50 text-red-700 text-sm p-3 mb-4 border border-red-200 text-left">
+          <p className="font-semibold text-red-900 mb-0.5">Verification Mismatch</p>
+          <p>{error}</p>
+          <p className="mt-1 font-semibold text-red-800">
+            {attemptsLeft > 0 ? `Attempts Remaining: ${attemptsLeft}` : "Access blocked due to failed face verification."}
+          </p>
+        </div>
+      )}
+
+      <button
+        className={primaryBtn}
+        onClick={handleVerify}
+        disabled={phase === "loading" || phase === "verifying" || (phase === "failed" && attemptsLeft <= 0)}
+      >
+        {phase === "verifying" ? "Comparing Face..." : phase === "failed" ? "Retry Face Verification" : "Verify Face to Login"}
+      </button>
+
+      <button className="w-full mt-3 text-sm text-slate-500 underline" onClick={onBack} disabled={phase === "verifying"}>
+        Cancel &amp; Return to Login
+      </button>
+    </SplitLayout>
+  );
+}
+
+// ----------------------------------------------------
 // STUDENT DASHBOARD (REAL AIRTABLE TESTS & MONGODB RESULTS)
 // ----------------------------------------------------
 function StudentDashboard({ student, token, faceRegistered, onStartTest, onLogout }) {
@@ -523,7 +685,7 @@ function FaceRegistrationGate({ student, token, onComplete, onBack }) {
 
       engine.stop();
       setPhase("done");
-      setTimeout(() => onComplete(res.token), 1000);
+      setTimeout(() => onComplete(res.token, matcher.getReference()), 1000);
     } catch (e) {
       setError(e.message || "Registration failed.");
       setPhase("ready");
@@ -537,7 +699,7 @@ function FaceRegistrationGate({ student, token, onComplete, onBack }) {
           ✓
         </div>
         <h1 className="text-3xl font-bold text-slate-900">Registration Complete!</h1>
-        <p className="text-slate-500 mt-1 mb-5">Your face has been enrolled in the database. Proceeding to exam verification...</p>
+        <p className="text-slate-500 mt-1 mb-5">Your baseline face has been enrolled securely. Proceeding to student dashboard...</p>
       </SplitLayout>
     );
   }
@@ -685,7 +847,7 @@ function TestIdentityGate({ student, selectedTest, token, onVerified, onBack }) 
       if (engineRef.current) engineRef.current.stop();
 
       setTimeout(() => {
-        onVerified(res.token, questions, duration);
+        onVerified(res.token, questions, duration, res.faceDescriptor || matcher.getReference());
       }, 1200);
 
     } catch (err) {
@@ -729,7 +891,7 @@ function TestIdentityGate({ student, selectedTest, token, onVerified, onBack }) 
 
             if (engineRef.current) engineRef.current.stop();
             setTimeout(() => {
-              onVerified(statusRes.token, questions, duration);
+              onVerified(statusRes.token, questions, duration, statusRes.faceDescriptor);
             }, 1000);
           }
         } catch {}
@@ -862,11 +1024,14 @@ function TestIdentityGate({ student, selectedTest, token, onVerified, onBack }) 
 }
 
 // ----------------------------------------------------
-// TEST SCREEN (AI MONITORING + ELECTRON IPC + SUBMISSION)
+// TEST SCREEN (AI MONITORING + ELECTRON IPC + CONTINUOUS FACE VERIFICATION + AUTO-PAUSE)
 // ----------------------------------------------------
-function Test({ student, selectedTest, questions, durationSeconds, testToken, onFinish }) {
+function Test({ student, selectedTest, questions, durationSeconds, testToken, faceDescriptor, onFinish }) {
   const videoRef = useRef(null);
+  const modalVideoRef = useRef(null);
   const engineRef = useRef(null);
+  const faceMatcherRef = useRef(null);
+  const faceDescriptorRef = useRef(faceDescriptor);
   const answersRef = useRef({});
   const eventsRef = useRef([]);
   const strikesRef = useRef(0);
@@ -884,6 +1049,18 @@ function Test({ student, selectedTest, questions, durationSeconds, testToken, on
   const [toast, setToast] = useState(null);
   const [submitting, setSubmitting] = useState(false);
 
+  // In-test auto-pause state
+  const [isPaused, setIsPaused] = useState(false);
+  const [pauseReason, setPauseReason] = useState(null); // FACE_MISMATCH, NO_FACE, MULTIPLE_FACES
+  const [pauseDetail, setPauseDetail] = useState("");
+  const [pauseDistance, setPauseDistance] = useState(null);
+  const isPausedRef = useRef(false);
+  const mismatchStreakRef = useRef(0);
+  const noFaceStreakRef = useRef(0);
+  const multiFaceStreakRef = useRef(0);
+  const matchStreakRef = useRef(0);
+  const pauseStartRef = useRef(null);
+
   const showToast = (msg, kind) => {
     setToast({ msg, kind, id: Date.now() });
     clearTimeout(toastTimer.current);
@@ -896,6 +1073,36 @@ function Test({ student, selectedTest, questions, durationSeconds, testToken, on
       api("/api/session/heartbeat", { method: "POST", token: testToken }).catch(() => {});
     }, 25000);
     return () => clearInterval(hbTimer);
+  }, [testToken]);
+
+  // Load FaceMatcher with student baseline for continuous in-test verification
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        let descriptor = faceDescriptorRef.current;
+        if (!descriptor || descriptor.length !== 128) {
+          const refRes = await api("/api/face/reference", { token: testToken }).catch(() => null);
+          if (refRes && refRes.descriptor) {
+            descriptor = refRes.descriptor;
+            faceDescriptorRef.current = descriptor;
+          }
+        }
+        if (!descriptor) return;
+
+        const matcher = new FaceMatcher({ threshold: FACE_THRESHOLD });
+        await matcher.load();
+        if (cancelled) return;
+        matcher.setReference(descriptor);
+        faceMatcherRef.current = matcher;
+      } catch (err) {
+        console.warn("Could not initialize continuous face matcher:", err);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [testToken]);
 
   // Submission handler
@@ -938,7 +1145,6 @@ function Test({ student, selectedTest, questions, durationSeconds, testToken, on
         submittedAt: Date.now(),
       });
     } catch (err) {
-      // In case of submission error, notify student
       onFinish({
         score: null,
         total: questions.length,
@@ -949,6 +1155,147 @@ function Test({ student, selectedTest, questions, durationSeconds, testToken, on
       });
     }
   };
+
+  // Exam pause trigger
+  const triggerPause = useCallback((reason, detail, distance = null) => {
+    if (isPausedRef.current || finishedRef.current) return;
+    isPausedRef.current = true;
+    setIsPaused(true);
+    setPauseReason(reason);
+    setPauseDetail(detail);
+    setPauseDistance(distance);
+    pauseStartRef.current = Date.now();
+
+    const photo = videoRef.current ? capturePhoto(videoRef.current) : null;
+    api("/api/test/activity", {
+      method: "POST",
+      token: testToken,
+      body: {
+        testId: selectedTest.id,
+        testTitle: selectedTest.title,
+        eventType: reason,
+        duration: 0,
+        tabTitle: document.title,
+        tabUrl: window.location.href,
+        metadata: { reason: detail, distance, snapshot: photo },
+      },
+    }).catch(() => {});
+
+    eventsRef.current.push({
+      type: reason,
+      severity: "high",
+      timestamp: Date.now(),
+      questionNo: currentRef.current + 1,
+      riskScore: 35,
+      meta: { reason: detail, distance },
+    });
+
+    strikesRef.current += 1;
+    const n = strikesRef.current;
+    showToast(`Warning ${n}/${MAX_STRIKES}: Exam Paused - ${EVENT_LABELS[reason] || reason}`, "warning");
+
+    if (n >= MAX_STRIKES) {
+      finishRef.current(`Auto-submitted: Reached maximum ${MAX_STRIKES} proctoring violations (${reason})`);
+    }
+  }, [selectedTest, testToken]);
+
+  // Exam unpause / auto-resume trigger
+  const resumeExam = useCallback(() => {
+    if (!isPausedRef.current || finishedRef.current) return;
+    const pausedDuration = pauseStartRef.current ? Math.round((Date.now() - pauseStartRef.current) / 1000) : 0;
+
+    api("/api/test/activity", {
+      method: "POST",
+      token: testToken,
+      body: {
+        testId: selectedTest.id,
+        testTitle: selectedTest.title,
+        eventType: "EXAM_RESUMED",
+        duration: pausedDuration,
+        tabTitle: document.title,
+        tabUrl: window.location.href,
+        metadata: { previousPauseReason: pauseReason, pausedSeconds: pausedDuration },
+      },
+    }).catch(() => {});
+
+    isPausedRef.current = false;
+    setIsPaused(false);
+    setPauseReason(null);
+    setPauseDetail("");
+    setPauseDistance(null);
+    pauseStartRef.current = null;
+    showToast("Registered face confirmed! Exam resumed.", "notice");
+  }, [selectedTest, testToken, pauseReason]);
+
+  // Continuous in-test face verification against registered baseline
+  useEffect(() => {
+    if (phase !== "running") return;
+    let running = true;
+
+    const intervalId = setInterval(async () => {
+      if (!running || finishedRef.current) return;
+      const video = videoRef.current;
+      const matcher = faceMatcherRef.current;
+      if (!video || !matcher || !matcher.hasReference()) return;
+
+      try {
+        const result = await matcher.check(video);
+        if (!result.ok) return;
+
+        if (result.faces === 0) {
+          noFaceStreakRef.current += 1;
+          matchStreakRef.current = 0;
+          mismatchStreakRef.current = 0;
+          multiFaceStreakRef.current = 0;
+
+          if (noFaceStreakRef.current >= 4 && !isPausedRef.current) {
+            triggerPause("NO_FACE", "No face detected in webcam view. Please face the camera.");
+          }
+        } else if (result.faces > 1) {
+          multiFaceStreakRef.current += 1;
+          matchStreakRef.current = 0;
+          mismatchStreakRef.current = 0;
+          noFaceStreakRef.current = 0;
+
+          if (multiFaceStreakRef.current >= 2 && !isPausedRef.current) {
+            triggerPause("MULTIPLE_FACES", "Multiple faces detected. Only the registered student may take this exam.");
+          }
+        } else if (result.faces === 1) {
+          noFaceStreakRef.current = 0;
+          multiFaceStreakRef.current = 0;
+
+          if (result.match === false) {
+            // FACE MISMATCH: A different person is in front of the camera!
+            mismatchStreakRef.current += 1;
+            matchStreakRef.current = 0;
+
+            if (mismatchStreakRef.current >= 2 && !isPausedRef.current) {
+              triggerPause(
+                "FACE_MISMATCH",
+                `Different person detected! Live webcam does not match registered face for ${student.name}.`,
+                result.distance
+              );
+            }
+          } else {
+            // REGISTERED STUDENT FACE MATCHED!
+            mismatchStreakRef.current = 0;
+            matchStreakRef.current += 1;
+
+            if (isPausedRef.current && matchStreakRef.current >= 2) {
+              resumeExam();
+            }
+          }
+        }
+      } catch {
+        // Ignore single dropped frame
+      }
+    }, 1800);
+
+    return () => {
+      running = false;
+      clearInterval(intervalId);
+    };
+  }, [phase, student, triggerPause, resumeExam]);
 
   // Examination activity tracking (Window blur/focus, duration away, tab switches)
   useEffect(() => {
@@ -1011,7 +1358,6 @@ function Test({ student, selectedTest, questions, durationSeconds, testToken, on
     if (!proctor) return undefined;
 
     const offEvent = proctor.onEvent((entry) => {
-      // Forward to backend activity log
       api("/api/test/activity", {
         method: "POST",
         token: testToken,
@@ -1050,7 +1396,6 @@ function Test({ student, selectedTest, questions, durationSeconds, testToken, on
       }
     });
 
-    // Block copy / paste inside renderer and report to electron
     const blockClipboard = (type) => (e) => {
       e.preventDefault();
       proctor.reportActivity(type, {});
@@ -1112,7 +1457,6 @@ function Test({ student, selectedTest, questions, durationSeconds, testToken, on
         await engine.start();
         if (cancelled) { engine.stop(); return; }
 
-        // Baseline calibration
         setPhase("calibrating");
         const ok = await engine.calibrate();
         if (cancelled) return;
@@ -1128,9 +1472,9 @@ function Test({ student, selectedTest, questions, durationSeconds, testToken, on
     };
   }, []);
 
-  // Countdown timer
+  // Countdown timer (STOPS / FROZEN whenever exam is paused!)
   useEffect(() => {
-    if (phase !== "running") return;
+    if (phase !== "running" || isPaused) return;
     const id = setInterval(() => {
       setTimeLeft((t) => {
         if (t <= 1) {
@@ -1141,13 +1485,23 @@ function Test({ student, selectedTest, questions, durationSeconds, testToken, on
       });
     }, 1000);
     return () => clearInterval(id);
-  }, [phase]);
+  }, [phase, isPaused]);
+
+  // Keep modal video stream synchronized
+  useEffect(() => {
+    if (isPaused && modalVideoRef.current && videoRef.current && videoRef.current.srcObject) {
+      modalVideoRef.current.srcObject = videoRef.current.srcObject;
+      modalVideoRef.current.play().catch(() => {});
+    }
+  }, [isPaused]);
 
   const pick = (optionIndex) => {
+    if (isPaused || submitting) return;
     answersRef.current = { ...answersRef.current, [current]: optionIndex };
     setAnswers({ ...answersRef.current });
   };
   const go = (i) => {
+    if (isPaused || submitting) return;
     currentRef.current = i;
     setCurrent(i);
   };
@@ -1157,12 +1511,20 @@ function Test({ student, selectedTest, questions, durationSeconds, testToken, on
   const q = questions[current] || { question: "Loading...", options: [] };
 
   let liveText = "Face OK", liveColor = "text-green-600", dotColor = "bg-green-500";
-  if (live.faces === 0) { liveText = "No face!"; liveColor = "text-red-600"; dotColor = "bg-red-500"; }
-  else if (live.faces > 1) { liveText = "Multiple faces!"; liveColor = "text-amber-600"; dotColor = "bg-amber-500"; }
-  else if (live.headTurn || live.headDown || live.gazeAway) { liveText = "Movement warning"; liveColor = "text-amber-600"; dotColor = "bg-amber-500"; }
+  if (isPaused) {
+    liveText = pauseReason === "FACE_MISMATCH" ? "Face Mismatch!" : "Exam Paused";
+    liveColor = "text-red-600 font-bold";
+    dotColor = "bg-red-500 animate-ping";
+  } else if (live.faces === 0) {
+    liveText = "No face!"; liveColor = "text-red-600"; dotColor = "bg-red-500";
+  } else if (live.faces > 1) {
+    liveText = "Multiple faces!"; liveColor = "text-amber-600"; dotColor = "bg-amber-500";
+  } else if (live.headTurn || live.headDown || live.gazeAway) {
+    liveText = "Movement warning"; liveColor = "text-amber-600"; dotColor = "bg-amber-500";
+  }
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
+    <div className="min-h-screen bg-slate-50 text-slate-900 relative">
       {/* Initialization Modal */}
       {phase !== "running" && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -1180,6 +1542,73 @@ function Test({ student, selectedTest, questions, durationSeconds, testToken, on
             {phase === "error" && (
               <p className="text-red-600 font-medium">Could not start proctoring engine. Check camera permissions.</p>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* FULL-SCREEN LOCKDOWN OVERLAY WHEN EXAM IS PAUSED */}
+      {isPaused && (
+        <div className="fixed inset-0 bg-slate-950/95 backdrop-blur-md z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border-2 border-red-500 rounded-3xl p-6 sm:p-8 max-w-lg w-full text-center shadow-2xl shadow-red-950/80 relative overflow-hidden text-white">
+            <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-red-600 via-amber-400 to-red-600 animate-pulse" />
+
+            <div className="w-16 h-16 rounded-full bg-red-500/20 text-red-400 border border-red-500/30 flex items-center justify-center text-3xl mx-auto mb-4 font-bold animate-bounce">
+              ⚠️
+            </div>
+
+            <div className="inline-flex items-center gap-1.5 px-3.5 py-1 rounded-full text-xs font-bold uppercase tracking-wider bg-red-500/20 text-red-300 border border-red-500/30 mb-3">
+              <span className="w-2 h-2 rounded-full bg-red-500 animate-ping" />
+              Exam Paused · Strike {strikesRef.current} of {MAX_STRIKES}
+            </div>
+
+            <h2 className="text-2xl sm:text-3xl font-bold tracking-tight text-white mb-2">
+              {pauseReason === "FACE_MISMATCH"
+                ? "Unauthorized Face Detected!"
+                : pauseReason === "NO_FACE"
+                ? "No Face Detected!"
+                : "Multiple Faces Detected!"}
+            </h2>
+
+            <p className="text-slate-300 text-sm mb-5 leading-relaxed">
+              {pauseDetail ||
+                (pauseReason === "FACE_MISMATCH"
+                  ? `A different face was detected. Only registered student ${student.name} (${student.regNo}) is authorized to take this test.`
+                  : "Please ensure your face is clearly visible directly in front of the camera.")}
+            </p>
+
+            {/* Embedded Live Webcam inside Lockdown Modal */}
+            <div className="relative rounded-2xl overflow-hidden bg-black border border-slate-700 mb-5 max-w-sm mx-auto shadow-inner">
+              <video
+                ref={modalVideoRef}
+                muted
+                playsInline
+                className="w-full aspect-video object-cover [transform:scaleX(-1)]"
+              />
+              <div className="absolute inset-0 border-2 border-red-500/70 pointer-events-none rounded-2xl" />
+              <div className="absolute top-3 left-3 w-4 h-4 border-t-2 border-l-2 border-red-400" />
+              <div className="absolute top-3 right-3 w-4 h-4 border-t-2 border-r-2 border-red-400" />
+              <div className="absolute bottom-3 left-3 w-4 h-4 border-b-2 border-l-2 border-red-400" />
+              <div className="absolute bottom-3 right-3 w-4 h-4 border-b-2 border-r-2 border-red-400" />
+              <div className="absolute left-0 right-0 h-0.5 bg-red-400/80 shadow-[0_0_12px_rgba(248,113,113,1)] animate-pulse" />
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-slate-800/80 border border-slate-700 text-left text-xs text-slate-300 space-y-1.5 mb-5">
+              <div className="flex items-center gap-2 text-cyan-400 font-semibold">
+                <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
+                Continuous Face Matching Active
+              </div>
+              <p className="text-slate-400">
+                • <b>Timer Frozen:</b> Countdown timer is paused. You will not lose exam time while paused.
+              </p>
+              <p className="text-slate-400">
+                • <b>Auto-Resume:</b> Look directly at the camera. The exam will automatically unpause as soon as <b>{student.name}</b>'s registered face is recognized.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-center gap-2 text-xs text-amber-400 font-medium">
+              <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+              Looking for registered student face... Match to resume exam.
+            </div>
           </div>
         </div>
       )}
@@ -1214,8 +1643,8 @@ function Test({ student, selectedTest, questions, durationSeconds, testToken, on
             <span className="text-xs px-2.5 py-1 bg-amber-100 text-amber-800 font-bold rounded-full">
               Strikes: {strikesRef.current} / {MAX_STRIKES}
             </span>
-            <span className="font-mono text-xl font-bold text-slate-800 bg-slate-100 px-3 py-1 rounded-xl">
-              {mm}:{ss}
+            <span className={`font-mono text-xl font-bold px-3 py-1 rounded-xl ${isPaused ? "bg-red-100 text-red-700 animate-pulse" : "bg-slate-100 text-slate-800"}`}>
+              {mm}:{ss} {isPaused ? "(PAUSED)" : ""}
             </span>
           </div>
         </div>
@@ -1234,11 +1663,12 @@ function Test({ student, selectedTest, questions, durationSeconds, testToken, on
               <button
                 key={idx}
                 onClick={() => pick(idx)}
+                disabled={isPaused || submitting}
                 className={`w-full flex items-center gap-3 text-left p-4 rounded-xl border-2 transition ${
                   answers[current] === idx
                     ? "border-blue-600 bg-blue-50 text-blue-900 shadow-sm"
                     : "border-slate-200 hover:border-slate-300"
-                }`}
+                } ${isPaused ? "opacity-50 cursor-not-allowed" : ""}`}
               >
                 <span
                   className={`w-7 h-7 rounded-full flex items-center justify-center text-sm font-bold ${
@@ -1254,7 +1684,7 @@ function Test({ student, selectedTest, questions, durationSeconds, testToken, on
 
           <div className="flex gap-3 mt-8 pt-4 border-t border-slate-100">
             <button
-              disabled={current === 0 || submitting}
+              disabled={current === 0 || submitting || isPaused}
               onClick={() => go(current - 1)}
               className="px-5 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 font-medium disabled:opacity-40 transition"
             >
@@ -1263,16 +1693,16 @@ function Test({ student, selectedTest, questions, durationSeconds, testToken, on
             {current < questions.length - 1 ? (
               <button
                 onClick={() => go(current + 1)}
-                disabled={submitting}
-                className="px-6 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 font-semibold text-white ml-auto shadow-md transition"
+                disabled={submitting || isPaused}
+                className="px-6 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 font-semibold text-white ml-auto shadow-md transition disabled:opacity-40"
               >
                 Next
               </button>
             ) : (
               <button
                 onClick={() => finishRef.current("Submitted by student")}
-                disabled={submitting}
-                className="px-6 py-2.5 rounded-xl bg-green-600 hover:bg-green-700 font-semibold text-white ml-auto shadow-md transition"
+                disabled={submitting || isPaused}
+                className="px-6 py-2.5 rounded-xl bg-green-600 hover:bg-green-700 font-semibold text-white ml-auto shadow-md transition disabled:opacity-40"
               >
                 {submitting ? "Submitting..." : "Submit Test"}
               </button>
@@ -1291,9 +1721,10 @@ function Test({ student, selectedTest, questions, durationSeconds, testToken, on
           </div>
           <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm text-xs space-y-2 text-slate-600">
             <p className="font-semibold text-slate-900">Active Monitoring</p>
-            <p>• Face Landmarks & Gaze tracking</p>
-            <p>• Ambient Noise & Audio spikes</p>
-            <p>• Single Display verification</p>
+            <p>• Continuous Face Recognition (1:1 Registered Match)</p>
+            <p>• Auto-Pause on Face Mismatch</p>
+            <p>• Landmarks, Gaze & Ambient Audio</p>
+            <p>• Single Display Verification</p>
           </div>
         </div>
       </div>
@@ -1351,6 +1782,7 @@ export default function App() {
   const [studentToken, setStudentToken] = useState("");
   const [testToken, setTestToken] = useState("");
   const [faceRegistered, setFaceRegistered] = useState(false);
+  const [registeredFaceDescriptor, setRegisteredFaceDescriptor] = useState(null);
   const [selectedTest, setSelectedTest] = useState(null);
   const [testQuestions, setTestQuestions] = useState([]);
   const [testDuration, setTestDuration] = useState(300);
@@ -1360,6 +1792,25 @@ export default function App() {
     setStudent(s);
     setStudentToken(token);
     setFaceRegistered(fr);
+    if (!fr) {
+      // First-time student -> Must register face (registered only ONCE)
+      setStage("registerFace");
+    } else {
+      // Returning student -> Must verify face before entering dashboard
+      setStage("loginFaceVerify");
+    }
+  };
+
+  const handleRegisterDone = (newToken, descriptor) => {
+    setFaceRegistered(true);
+    setStudentToken(newToken);
+    if (descriptor) setRegisteredFaceDescriptor(descriptor);
+    setStage("dashboard");
+  };
+
+  const handleLoginFaceVerified = (verifiedToken, descriptor) => {
+    setStudentToken(verifiedToken);
+    if (descriptor) setRegisteredFaceDescriptor(descriptor);
     setStage("dashboard");
   };
 
@@ -1368,20 +1819,16 @@ export default function App() {
     if (!faceRegistered) {
       setStage("registerFace");
     } else {
+      // Mandatory pre-test identity re-verification before exam start
       setStage("verifyIdentity");
     }
   };
 
-  const handleRegisterDone = (newToken) => {
-    setFaceRegistered(true);
-    setStudentToken(newToken);
-    setStage("verifyIdentity");
-  };
-
-  const handleIdentityVerified = (verifiedTestToken, questions, duration) => {
+  const handleIdentityVerified = (verifiedTestToken, questions, duration, descriptor) => {
     setTestToken(verifiedTestToken);
     setTestQuestions(questions);
     setTestDuration(duration);
+    if (descriptor) setRegisteredFaceDescriptor(descriptor);
     setStage("test");
   };
 
@@ -1394,11 +1841,32 @@ export default function App() {
     setStudent(null);
     setStudentToken("");
     setTestToken("");
+    setRegisteredFaceDescriptor(null);
     setSelectedTest(null);
     setStage("login");
   };
 
   if (stage === "login") return <StudentLogin onDone={handleLoginDone} />;
+
+  if (stage === "registerFace")
+    return (
+      <FaceRegistrationGate
+        student={student}
+        token={studentToken}
+        onComplete={handleRegisterDone}
+        onBack={() => setStage("login")}
+      />
+    );
+
+  if (stage === "loginFaceVerify")
+    return (
+      <LoginFaceVerificationGate
+        student={student}
+        token={studentToken}
+        onComplete={handleLoginFaceVerified}
+        onBack={() => setStage("login")}
+      />
+    );
 
   if (stage === "dashboard")
     return (
@@ -1408,16 +1876,6 @@ export default function App() {
         faceRegistered={faceRegistered}
         onStartTest={handleStartTest}
         onLogout={handleLogout}
-      />
-    );
-
-  if (stage === "registerFace")
-    return (
-      <FaceRegistrationGate
-        student={student}
-        token={studentToken}
-        onComplete={handleRegisterDone}
-        onBack={() => setStage("dashboard")}
       />
     );
 
@@ -1440,6 +1898,7 @@ export default function App() {
         questions={testQuestions}
         durationSeconds={testDuration}
         testToken={testToken}
+        faceDescriptor={registeredFaceDescriptor}
         onFinish={handleTestFinish}
       />
     );
