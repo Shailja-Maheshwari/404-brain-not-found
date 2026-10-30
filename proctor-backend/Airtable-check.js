@@ -48,10 +48,15 @@ const hint = (status, type) => {
       if (!rows.length) console.log("  NOTE: table khali hai, isme data daalo.");
       if (label === "Tests" && fields.size && ![...fields].some((f) => /^(title|name)$/i.test(f))) console.log("  NOTE: 'Title' field nahi mila.");
       if (label === "MCQs" && rows.length) {
-        const need = ["Question", "Option A", "Option B", "Option C", "Option D", "Test"];
-        const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
-        need.forEach((n) => { if (![...fields].some((f) => norm(f) === norm(n))) console.log("  NOTE: '" + n + "' field nahi mila (ya sab rows me khali hai)."); });
-        if (![...fields].some((f) => /^(correctoption|correctanswer|answer|correct)$/.test(norm(f)))) console.log("  NOTE: 'Correct Answer' field nahi mila.");
+        const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+        const fieldNames = [...fields].map((f) => norm(f));
+        const checkPresent = (candidates) => candidates.some((c) => fieldNames.includes(norm(c)));
+        if (!checkPresent(["Question", "Questions", "QuestionText"])) console.log("  NOTE: 'Question' / 'Questions' field nahi mila.");
+        ["Option A", "Option B", "Option C", "Option D"].forEach((opt) => {
+          if (!checkPresent([opt])) console.log("  NOTE: '" + opt + "' field nahi mila.");
+        });
+        if (!checkPresent(["Test", "Tests"])) console.log("  NOTE: 'Test' / 'Tests' field nahi mila.");
+        if (!checkPresent(["Correct Answer", "Correct Option", "Answer", "Correct"])) console.log("  NOTE: 'Correct Answer' field nahi mila.");
       }
     } catch (e) {
       console.log("  FAIL  Airtable tak pahunch nahi paye: " + e.message + "  (internet / VPN / firewall check karo)");

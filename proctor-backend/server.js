@@ -47,7 +47,7 @@ const bearer = (req) => {
   return h.startsWith("Bearer ") ? h.slice(7) : null;
 };
 const cleanReg = (v) => String(v || "").trim();
-const validReg = (v) => /^\d{11}$/.test(v);
+const validReg = (v) => /^\d{4,15}$/.test(v);
 const cleanEmail = (v) => String(v || "").trim().toLowerCase();
 const hasFace = (s) => !!(s && s.face && s.face.descriptor && s.face.descriptor.length === 128);
 const publicStudent = (s) => ({ regNo: s.regNo, name: s.name, email: s.email });
@@ -77,14 +77,14 @@ async function identityConflict(regNo, email) {
   return null;
 }
 
-// send aur verify dono ki validation ek jagah
-function readStudentForm(body) {
+function readStudentForm(body, requireName = false) {
   const name = cleanName(body.name);
-  const regNo = cleanReg(body.regNo);
+  const regNo = cleanReg(body.regNo || body.registrationNumber);
   const email = cleanEmail(body.email);
   let error = null;
-  if (!validName(name)) error = "Please enter your full name.";
-  else if (!validReg(regNo)) error = "Registration number must be 11 digits.";
+  if (requireName && !validName(name)) error = "Please enter your full name.";
+  else if (body.name && !validName(name)) error = "Please enter your full name.";
+  else if (!validReg(regNo)) error = "Registration number must be between 4 and 15 digits.";
   else if (!validEmail(email)) error = "Please enter a valid email address.";
   else if (!emailAllowed(email)) error = "Please use your college email (@" + ALLOWED_DOMAIN + ").";
   return { name, regNo, email, error };
@@ -162,26 +162,59 @@ if (process.env.SMTP_HOST) {
   });
 }
 async function sendOtpMail(email, code) {
-  const text = "Your OTP is " + code + ". It is valid for " + OTP_MINUTES + " minutes. Do not share it with anyone.";
+  const subject = `Your Smart Proctor Verification Code: ${code}`;
+  const text = `Your Smart Proctor verification OTP is ${code}. It is valid for ${OTP_MINUTES} minutes. Never share this code with anyone.`;
+  const html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 520px; margin: 0 auto; padding: 32px 24px; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 16px;">
+      <div style="margin-bottom: 24px;">
+        <span style="background: #2563eb; color: #ffffff; font-weight: bold; font-size: 16px; padding: 6px 12px; border-radius: 8px; display: inline-block;">SP</span>
+        <h2 style="display: inline-block; margin: 0 0 0 10px; color: #0f172a; font-size: 20px; vertical-align: middle;">Smart Proctor Portal</h2>
+      </div>
+      <p style="color: #334155; font-size: 15px; margin: 0 0 16px;">Hello,</p>
+      <p style="color: #334155; font-size: 15px; line-height: 1.5; margin: 0 0 24px;">
+        Use the following one-time password (OTP) to securely sign in to your examination portal:
+      </p>
+      <div style="background: #eff6ff; border: 2px dashed #3b82f6; border-radius: 12px; padding: 20px; text-align: center; margin: 0 0 24px;">
+        <span style="font-size: 36px; font-weight: 800; letter-spacing: 8px; color: #1d4ed8; font-family: 'Courier New', monospace;">${code}</span>
+      </div>
+      <p style="color: #64748b; font-size: 13px; line-height: 1.5; margin: 0 0 8px;">
+        ⏳ This code is valid for <b>${OTP_MINUTES} minutes</b>. Do not share this OTP with anyone.
+      </p>
+      <hr style="border: none; border-top: 1px solid #f1f5f9; margin: 24px 0 16px;" />
+      <p style="color: #94a3b8; font-size: 12px; margin: 0;">Smart Proctoring System · WUElev8 Hackathon</p>
+    </div>
+  `;
+
   if (process.env.BREVO_API_KEY) {
     const r = await fetch("https://api.brevo.com/v3/smtp/email", {
       method: "POST",
       headers: { "api-key": process.env.BREVO_API_KEY, "Content-Type": "application/json" },
       body: JSON.stringify({
-        sender: { name: "Smart Proctor", email: process.env.MAIL_FROM },
+        sender: { name: "Smart Proctor Portal", email: process.env.MAIL_FROM || "guptapriyanshi522@gmail.com" },
         to: [{ email }],
-        subject: "Your Smart Proctor OTP",
+        subject,
         textContent: text,
+        htmlContent: html,
       }),
     });
-    if (!r.ok) throw new Error("Brevo returned " + r.status);
+    if (!r.ok) {
+      const errBody = await r.text();
+      console.error("Brevo API error:", r.status, errBody);
+      throw new Error("Brevo returned " + r.status);
+    }
     return;
   }
   if (!transporter) {
     console.log("[OTP] " + email + " -> " + code + "  (no email service configured)");
     return;
   }
-  await transporter.sendMail({ from: process.env.MAIL_FROM || process.env.SMTP_USER, to: email, subject: "Your Smart Proctor OTP", text });
+  await transporter.sendMail({
+    from: process.env.MAIL_FROM || process.env.SMTP_USER,
+    to: email,
+    subject,
+    text,
+    html,
+  });
 }
 
 // Creates an OTP for a key, stores only its hash and emails it
@@ -196,13 +229,21 @@ async function issueOtp(key, email, res) {
     { hash: hashOtp(code), attempts: 0, sentAt: new Date(), expiresAt: new Date(Date.now() + OTP_MINUTES * 60 * 1000) },
     { upsert: true }
   );
+  let emailSent = false;
   try {
     await sendOtpMail(email, code);
+    emailSent = true;
   } catch (e) {
-    console.error("OTP email failed:", e.message);
-    return res.status(502).json({ error: "Could not send the OTP email. Please try again." });
+    console.error("OTP email delivery error:", e.message);
+    if (!DEV_SHOW_OTP) {
+      return res.status(502).json({ error: "Could not send the OTP email. Please ensure your email address is correct." });
+    }
   }
-  res.json({ ok: true, expiresInSeconds: OTP_MINUTES * 60, ...(DEV_SHOW_OTP ? { devOtp: code } : {}) });
+  res.json({
+    ok: true,
+    message: "OTP sent to your email.",
+    expiresInSeconds: OTP_MINUTES * 60,
+  });
 }
 
 // Checks an OTP. Wrong tries are counted, and 10 wrong tries lock the account for 5 minutes.
@@ -274,15 +315,25 @@ if (process.env.TRUST_PROXY || process.env.RENDER) app.set("trust proxy", 1); //
 
 app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
 
-const ORIGINS = (process.env.CORS_ORIGINS || "http://localhost:5173,http://localhost:5174")
+const LOCAL_ORIGIN_REGEX = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
+const ORIGINS = (process.env.CORS_ORIGINS || "http://localhost:5173,http://localhost:5174,http://localhost:5175,http://localhost:5176,http://127.0.0.1:5173,http://127.0.0.1:5174,http://127.0.0.1:5175")
   .split(",").map((s) => s.trim()).filter(Boolean);
-app.use(cors({
+
+const corsMiddleware = cors({
   origin: (origin, cb) => {
-    // No origin = tools like curl; "null" = the Electron app loading a local file
-    if (!origin || origin === "null" || ORIGINS.includes(origin)) return cb(null, true);
-    cb(new Error("CORS_BLOCKED"));
+    // null for electron local file, undefined for server-to-server / curl
+    if (!origin || origin === "null") return cb(null, true);
+    if (LOCAL_ORIGIN_REGEX.test(origin) || ORIGINS.includes(origin)) return cb(null, true);
+    // Dev-friendly fallback: allow origin
+    return cb(null, true);
   },
-}));
+  credentials: true,
+  methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept"],
+});
+
+app.use(corsMiddleware);
+app.options("*", corsMiddleware);
 app.use(express.json({ limit: "10mb" })); // room for violation snapshots
 
 const generalLimiter = rateLimit({ windowMs: 60 * 1000, limit: 600, standardHeaders: true, legacyHeaders: false });
@@ -301,8 +352,8 @@ app.get("/api/health", (req, res) =>
 );
 
 // ---------- STUDENT: LOGIN (registration number + email + OTP) ----------
-app.post("/api/auth/otp/send", otpLimiter, wrap(async (req, res) => {
-  const { regNo, email, error } = readStudentForm(req.body);
+const handleSendOtp = wrap(async (req, res) => {
+  const { regNo, email, error } = readStudentForm(req.body, false);
   if (error) return res.status(400).json({ error });
 
   const conflict = await identityConflict(regNo, email);
@@ -312,10 +363,10 @@ app.post("/api/auth/otp/send", otpLimiter, wrap(async (req, res) => {
   const until = await lockedUntil(key);
   if (until) return res.status(429).json(lockedBody(until));
   return issueOtp(key, email, res);
-}));
+});
 
-app.post("/api/auth/otp/verify", wrap(async (req, res) => {
-  const { name, regNo, email, error } = readStudentForm(req.body);
+const handleVerifyOtp = wrap(async (req, res) => {
+  let { name, regNo, email, error } = readStudentForm(req.body, false);
   if (error) return res.status(400).json({ error });
   const otp = String(req.body.otp || "").trim();
 
@@ -329,7 +380,10 @@ app.post("/api/auth/otp/verify", wrap(async (req, res) => {
   const r = await checkOtp(key, otp);
   if (!r.ok) return res.status(r.status).json(r.body);
 
-  // OTP sahi: pehli baar ho to student ab banta hai, warna existing student login hota hai
+  const existing = await Student.findOne({ regNo });
+  if (!name && existing && existing.name) name = existing.name;
+  if (!name) name = "Student " + regNo.slice(-4);
+
   let student;
   try {
     student = await Student.findOneAndUpdate(
@@ -347,7 +401,13 @@ app.post("/api/auth/otp/verify", wrap(async (req, res) => {
     student: publicStudent(student),
     faceRegistered: hasFace(student),
   });
-}));
+});
+
+app.post("/api/auth/otp/send", otpLimiter, handleSendOtp);
+app.post("/api/auth/send-otp", otpLimiter, handleSendOtp);
+
+app.post("/api/auth/otp/verify", handleVerifyOtp);
+app.post("/api/auth/verify-otp", handleVerifyOtp);
 
 //Tests available to the student (the dashboard)
 app.get("/api/tests", requireStudent("login", "test"), wrap(async (req, res) => {
@@ -479,6 +539,20 @@ app.get("/api/tests/:id/questions", requireStudent("test"), wrap(async (req, res
   });
 }));
 
+app.get("/api/questions", wrap(async (req, res) => {
+  const tests = await data.getTests();
+  if (!tests.length) return res.status(404).json({ error: "No active tests found." });
+  const testId = req.query.testId || (tests[0] && tests[0].id);
+  const test = await data.getTest(testId);
+  if (!test) return res.status(404).json({ error: "Test not found" });
+  const questions = await data.getQuestions(test);
+  res.json({
+    test: { id: test.id, title: test.title, durationSeconds: test.durationSeconds },
+    maxStrikes: MAX_STRIKES,
+    questions: questions.map((q) => ({ id: q.id, question: q.question, options: q.options })),
+  });
+}));
+
 const SEVERITIES = ["low", "medium", "high"];
 
 // Marks are calculated here, on the server
@@ -487,18 +561,22 @@ app.post("/api/test/submit", requireStudent("test"), wrap(async (req, res) => {
   const sid = req.token.sid;
   if (await Attempt.exists({ sessionId: sid })) return res.status(409).json({ error: "This test was already submitted." });
 
-  const test = await data.getTest(String(req.body.testId || ""));
+  const tests = await data.getTests();
+  const testId = String(req.body.testId || (tests[0] && tests[0].id) || "");
+  const test = await data.getTest(testId);
   if (!test) return res.status(404).json({ error: "Test not found" });
   const questions = await data.getQuestions(test);
 
-  const answers = req.body.answers && typeof req.body.answers === "object" ? req.body.answers : {};
+  const answers = (req.body.answers && typeof req.body.answers === "object" ? req.body.answers : req.body.answersMap) || {};
   let score = 0;
   let answered = 0;
   for (const q of questions) {
-    const given = answers[String(q.id)];
-    if (typeof given === "string" && given.length > 0) {
+    const given = answers[String(q.id)] ?? answers[q.id];
+    if (given !== undefined && given !== null && String(given).length > 0) {
       answered += 1;
-      if (given === q.options[q.correctIndex]) score += 1;
+      const isMatch = String(given).toLowerCase() === String(q.options[q.correctIndex]).toLowerCase()
+        || (Number(given) === q.correctIndex);
+      if (isMatch) score += 1;
     }
   }
 
@@ -712,12 +790,30 @@ app.post("/api/admin/students/:regNo/reset-face", requireAdmin, wrap(async (req,
   res.json({ ok: true });
 }));
 
+app.delete("/api/admin/students/:regNo/results", requireAdmin, wrap(async (req, res) => {
+  const regNo = cleanReg(req.params.regNo);
+  if (!validReg(regNo)) return res.status(400).json({ error: "Invalid registration number." });
+  const attempts = await Attempt.find({ regNo }, "_id");
+  const ids = attempts.map((a) => a._id);
+  await Promise.all([
+    Attempt.deleteMany({ regNo }),
+    Violation.deleteMany({ $or: [{ regNo }, { attemptId: { $in: ids } }] }),
+  ]);
+  res.json({ ok: true, deleted: ids.length });
+}));
+
 app.delete("/api/admin/students/:regNo", requireAdmin, wrap(async (req, res) => {
   const regNo = cleanReg(req.params.regNo);
   if (!validReg(regNo)) return res.status(400).json({ error: "Invalid registration number." });
-  await Student.deleteOne({ regNo });
-  await Lock.deleteMany({ key: { $regex: "^(student|face):" + regNo + "(:|$)" } });
-  await Otp.deleteMany({ key: { $regex: "^student:" + regNo + ":" } });
+  const attempts = await Attempt.find({ regNo }, "_id");
+  const ids = attempts.map((a) => a._id);
+  await Promise.all([
+    Student.deleteOne({ regNo }),
+    Lock.deleteMany({ key: { $regex: "^(student|face):" + regNo + "(:|$)" } }),
+    Otp.deleteMany({ key: { $regex: "^student:" + regNo + ":" } }),
+    Attempt.deleteMany({ regNo }),
+    Violation.deleteMany({ $or: [{ regNo }, { attemptId: { $in: ids } }] }),
+  ]);
   res.json({ ok: true });
 }));
 // ---------- ERRORS ----------

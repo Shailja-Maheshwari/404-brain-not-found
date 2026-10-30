@@ -1,8 +1,9 @@
 // Backend ka poora flow check karta hai:  node e2e-test.js
 // Pehle backend chalao (npm run dev). Local .env me DEV_SHOW_OTP=true chahiye (sirf local testing ke liye).
 // Admin ke liye: ADMIN_EMAIL=<Admins table wali email> node e2e-test.js   (demo mode me admin@example.com)
+require("dotenv").config();
 const API = process.env.API_URL || "http://localhost:5000";
-const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || "admin@example.com").trim().toLowerCase();
+const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || process.env.DEMO_ADMIN_EMAIL || "guptapriyanshi522@gmail.com").trim().toLowerCase();
 
 let passed = 0;
 let failed = 0;

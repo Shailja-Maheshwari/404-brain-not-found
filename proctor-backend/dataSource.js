@@ -2,8 +2,9 @@
 //  - Airtable, when AIRTABLE_API_KEY and AIRTABLE_BASE_ID are set
 //  - built-in demo data otherwise
 // The correct answers stay inside the server. They are never sent to the frontend.
-const KEY = process.env.AIRTABLE_API_KEY || "";
-const BASE = process.env.AIRTABLE_BASE_ID || "";
+const KEY = (process.env.AIRTABLE_API_KEY || "").trim();
+const rawBase = (process.env.AIRTABLE_BASE_ID || "").trim();
+const BASE = rawBase.match(/^app[a-zA-Z0-9]+/)?.[0] || rawBase.split("/")[0] || "";
 const USE_AIRTABLE = !!(KEY && BASE);
 
 const TABLES = {
@@ -126,39 +127,37 @@ async function getTests() {
   if (!USE_AIRTABLE) return DEMO.tests;
 
   try {
-    console.log("[getTests] Fetching Airtable tests...");
-    console.log("[getTests] Table:", TABLES.tests);
-
     const rows = await cachedTable(TABLES.tests);
 
-    console.log("[getTests] Rows received:", rows.length);
-
-    const anyActive = rows.some(
-      (r) => field(r.fields, "Active") === true
-    );
+    const anyActive = rows.some((r) => field(r.fields, "Active") === true);
 
     const tests = rows
-      .filter((r) => !anyActive || field(r.fields, "Active") === true)
+      .filter((r) => {
+        const title = field(r.fields, "Title", "Name", "Test", "Test Title");
+        if (!title || !String(title).trim()) return false;
+        if (anyActive && field(r.fields, "Active") !== true) return false;
+        return true;
+      })
       .map((r) => {
-        const minutes = Number(
-          field(r.fields, "Duration", "Duration minutes", "Minutes")
-        );
+        const title = String(field(r.fields, "Title", "Name", "Test", "Test Title") ?? "Untitled test").trim();
+        const minutes = Number(field(r.fields, "Duration", "Duration minutes", "Minutes"));
+        const mcqLinks = r.fields.MCQs || r.fields.mcqs;
+        const totalQuestions = Array.isArray(mcqLinks) ? mcqLinks.length : undefined;
 
         return {
           id: r.id,
-          title: String(field(r.fields, "Title", "Name") ?? "Untitled test"),
+          title,
           durationSeconds: (minutes > 0 ? minutes : 5) * 60,
+          totalQuestions,
         };
       });
 
-    console.log("[getTests] Tests returned:", tests.length);
     return tests;
   } catch (err) {
     console.error("[getTests] Airtable error:", err);
     throw err;
   }
 }
-
 
 async function getTest(id) {
   return (await getTests()).find((t) => t.id === id) || null;
@@ -169,30 +168,36 @@ async function getQuestions(test) {
   if (!USE_AIRTABLE) return DEMO.questions;
   const rows = await cachedTable(TABLES.mcqs);
   const out = [];
+
   for (const r of rows) {
-    const link = field(r.fields, "Test");
+    const link = field(r.fields, "Tests", "Test");
     const belongs = Array.isArray(link)
       ? link.includes(test.id) || link.includes(test.title)
       : link !== undefined && (String(link) === test.id || String(link) === test.title);
     if (!belongs) continue;
 
-    const question = String(field(r.fields, "Question") ?? "").trim();
+    const question = String(field(r.fields, "Questions", "Question", "QuestionText", "Q") ?? "").trim();
     const raw = [
-      field(r.fields, "Option A", "A"),
-      field(r.fields, "Option B", "B"),
-      field(r.fields, "Option C", "C"),
-      field(r.fields, "Option D", "D"),
+      field(r.fields, "Option A", "OptionA", "A"),
+      field(r.fields, "Option B", "OptionB", "B"),
+      field(r.fields, "Option C", "OptionC", "C"),
+      field(r.fields, "Option D", "OptionD", "D"),
     ].map((o) => String(o ?? "").trim());
 
-    // The correct option can be a letter (A-D), a number (1-4) or the option text itself
-    const c = String(field(r.fields, "Correct option", "Correct answer", "Answer", "Correct") ?? "").trim();
-    let correctText = c;
-    if (/^[A-Da-d]$/.test(c)) correctText = raw[c.toUpperCase().charCodeAt(0) - 65];
-    else if (/^[1-4]$/.test(c)) correctText = raw[Number(c) - 1];
+    // Correct option can be "Option B", "Option A", "A", "B", "1", "2" or exact option text
+    const c = String(field(r.fields, "Correct Answer", "Correct Option", "CorrectAnswer", "CorrectOption", "Answer", "Correct") ?? "").trim();
+    let correctIndex = -1;
+    const optLetterMatch = c.match(/^(?:Option\s*)?([A-D])$/i);
+    if (optLetterMatch) {
+      correctIndex = optLetterMatch[1].toUpperCase().charCodeAt(0) - 65;
+    } else if (/^[1-4]$/.test(c)) {
+      correctIndex = Number(c) - 1;
+    } else {
+      correctIndex = raw.findIndex((o) => o.toLowerCase() === c.toLowerCase());
+    }
 
     const options = raw.filter(Boolean);
-    const correctIndex = options.findIndex((o) => o.toLowerCase() === String(correctText || "").toLowerCase());
-    if (!question || options.length < 2 || correctIndex === -1) {
+    if (!question || options.length < 2 || correctIndex === -1 || correctIndex >= options.length) {
       console.warn("Skipping an MCQ with missing or invalid data (Airtable record " + r.id + ")");
       continue;
     }

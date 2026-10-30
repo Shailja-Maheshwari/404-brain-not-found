@@ -7,8 +7,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "check:airtable": "node airtable-check.js",
-    "test:e2e": "node e2e-test.js"
+    "check:airtable": "node Airtable-check.js",
+    "test:e2e": "node e2etest.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
