@@ -45,9 +45,9 @@ The system consists of 4 main components:
 5. Under **Environment Variables**, add the following from your `.env`:
    - `NODE_ENV`: `production`
    - `PORT`: `5000` (or leave default, Render sets this automatically)
-   - `MONGODB_URI`: `mongodb+srv://priyanshi-gupta:priyanshi1108@proctor-db.nqpbzxe.mongodb.net/proctor-db?retryWrites=true&w=majority`
-   - `JWT_SECRET`: *(A secure 32+ character string, e.g. from your .env)*
-   - `AIRTABLE_API_KEY`: *(Your Airtable Personal Access Token)*
+   - `MONGODB_URI`: *(Your MongoDB Atlas URI from proctor-backend/.env)*
+   - `JWT_SECRET`: *(A secure 32+ character string from proctor-backend/.env)*
+   - `AIRTABLE_API_KEY`: *(Your Airtable Personal Access Token from proctor-backend/.env)*
    - `AIRTABLE_BASE_ID`: `app1FGDscypeKRwP0`
    - `AIRTABLE_TABLE_ROLL`: `Roll`
    - `AIRTABLE_TABLE_ADMINS`: `Admins`
